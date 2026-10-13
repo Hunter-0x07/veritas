@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# 本地配置与运行产物
+dispatch.yaml
+.env
+veritas_runs/
+*.log
+
+# 系统
+.DS_Store

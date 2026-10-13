@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Veritas 架构设计</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --faint:#94a3b8; --line:#e2e8f0; --bg:#ffffff; --panel:#f8fafc;
+    --cairn:#7c3aed; --incalmo:#2563eb; --xbow:#ea580c; --artex:#059669; --strix:#0891b2; --bw:#db2777; --new:#64748b;
+    --sans:-apple-system,"Segoe UI","Noto Sans SC","PingFang SC",sans-serif;
+    --mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;font-size:12px}
+  .page{width:210mm;min-height:297mm;padding:16mm 15mm;margin:0 auto;page-break-after:always;position:relative}
+  .page:last-child{page-break-after:auto}
+  h1{font-size:30px;margin:0;letter-spacing:-.5px}
+  h2{font-size:17px;margin:0 0 10px;padding-bottom:6px;border-bottom:2px solid var(--ink);display:flex;align-items:baseline;gap:8px}
+  h2 .n{font-family:var(--mono);color:var(--faint);font-size:13px}
+  h3{font-size:12.5px;margin:14px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  p{margin:6px 0} .mut{color:var(--muted)} .mono{font-family:var(--mono)}
+  .sub{color:var(--muted);font-size:13px;margin-top:6px}
+  .kicker{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--incalmo);font-weight:700}
+  .tag{display:inline-block;font-family:var(--mono);font-size:9.5px;font-weight:700;color:#fff;padding:1px 6px;border-radius:4px;vertical-align:middle}
+  .t-cairn{background:var(--cairn)} .t-incalmo{background:var(--incalmo)} .t-xbow{background:var(--xbow)}
+  .t-artex{background:var(--artex)} .t-strix{background:var(--strix)} .t-bw{background:var(--bw)} .t-new{background:var(--new)}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:14px;font-size:11px}
+  .legend .it{display:flex;align-items:center;gap:5px} .dot{width:10px;height:10px;border-radius:3px}
+
+  /* layer diagram */
+  .layer{border:1px solid var(--line);border-left-width:5px;border-radius:8px;padding:10px 13px;margin:7px 0;background:var(--panel)}
+  .layer .lh{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  .layer .lt{font-weight:700;font-size:13px}
+  .layer .ld{color:var(--muted);font-size:11px;margin-top:3px}
+  .layer .srcs{display:flex;gap:4px;flex-shrink:0}
+  .sub-row{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
+  .chip{flex:1;min-width:120px;border:1px dashed var(--line);border-radius:6px;padding:7px 9px;background:#fff;font-size:10.5px}
+  .chip b{font-size:11px}
+
+  table{width:100%;border-collapse:collapse;font-size:10.5px;margin-top:8px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--panel);font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  td .k{font-weight:700}
+
+  .steps{display:flex;align-items:stretch;gap:0;margin:10px 0;flex-wrap:wrap}
+  .step{flex:1;min-width:92px;border:1px solid var(--line);border-radius:7px;padding:8px;background:var(--panel);position:relative;text-align:center}
+  .step .lv{font-family:var(--mono);font-size:9px;color:var(--faint)}
+  .step .nm{font-weight:700;font-size:11px;margin-top:2px}
+  .arrow{align-self:center;color:var(--faint);font-weight:700;padding:0 2px}
+
+  .road .m{border-left:3px solid var(--incalmo);padding:4px 0 10px 13px;margin-left:6px;position:relative}
+  .road .m::before{content:"";position:absolute;left:-7px;top:3px;width:11px;height:11px;border-radius:50%;background:var(--incalmo)}
+  .road .m.done::before{background:var(--artex)} .road .m.done{border-left-color:var(--artex)}
+  .road .mt{font-weight:700;font-size:12px} .road .mt .mono{color:var(--faint);font-size:10px;font-weight:400}
+  .road .md{color:var(--muted);font-size:10.5px;margin-top:2px}
+
+  .foot{position:absolute;bottom:9mm;left:15mm;right:15mm;display:flex;justify-content:space-between;font-family:var(--mono);font-size:9px;color:var(--faint);border-top:1px solid var(--line);padding-top:5px}
+  .cover{display:flex;flex-direction:column;justify-content:center;min-height:265mm}
+  .cover .big{font-size:13px;color:var(--muted);max-width:150mm;margin-top:14px;line-height:1.7}
+  .pill{display:inline-flex;gap:6px;align-items:center;font-family:var(--mono);font-size:10px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 11px;margin-top:20px;width:max-content}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .box{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--panel)}
+  .box .bt{font-weight:700;font-size:11.5px;margin-bottom:4px}
+  svg{max-width:100%}
+  .svg-n{fill:#fff;stroke-width:1.5}
+  .svg-t{font-family:var(--mono);font-size:9px;fill:var(--ink)}
+  .svg-l{font-family:var(--mono);font-size:8px;fill:var(--muted)}
+  .svg-e{stroke:var(--faint);stroke-width:1.2;fill:none}
+</style>
+</head>
+<body>
+
+<!-- COVER -->
+<section class="page">
+  <div class="cover">
+    <div class="kicker">Autonomous Penetration Engine · Architecture</div>
+    <h1 style="font-size:46px;margin-top:10px;font-family:var(--mono)">Veritas</h1>
+    <div class="sub" style="font-size:16px;color:var(--ink);font-weight:600;margin-top:10px">自动化渗透引擎 · 架构设计 v2</div>
+    <p class="big">在<b>攻击图</b>上做状态空间搜索——节点是立足点/资产/凭据/战利品，边是 kill-chain 动作（利用漏洞→权限跃迁），目标是达成某个访问级别或拿到某份数据。能挖 HackerOne，能从 Web 打进内网横向。</p>
+    <div class="pill">融合 6 个来源 · 经取舍而非堆砌</div>
+    <div class="legend" style="margin-top:22px">
+      <div class="it"><span class="dot" style="background:var(--cairn)"></span>Cairn — 状态空间搜索哲学</div>
+      <div class="it"><span class="dot" style="background:var(--incalmo)"></span>Incalmo — 高层攻击抽象</div>
+      <div class="it"><span class="dot" style="background:var(--xbow)"></span>XBOW — 协调舰队 / 创造发现·确定裁决</div>
+      <div class="it"><span class="dot" style="background:var(--artex)"></span>ARTEX — 双图 / CAS / 串行链 / 冷图 / trace</div>
+      <div class="it"><span class="dot" style="background:var(--strix)"></span>Strix — 沙箱执行器 / 知识包 / 报告</div>
+      <div class="it"><span class="dot" style="background:var(--bw)"></span>BreachWeave — Observer 监督</div>
+    </div>
+  </div>
+  <div class="foot"><span>VERITAS v2 · 架构设计</span><span>2026-10-13</span></div>
+</section>
+
+<!-- PRINCIPLE -->
+<section class="page">
+  <h2><span class="n">01</span>第一性原理</h2>
+  <p><b>渗透 = 在「攻击图」上搜索一条从初始立足点通往目标权限/数据的路径。</b>每成功利用一个漏洞 = 一次访问权限的跃迁。进展用<b>访问级别</b>度量，不用"发现了几个漏洞"——这是与"漏洞扫描器/验证器"的根本分野。</p>
+
+  <h3>访问级别阶梯（进展的度量）</h3>
+  <div class="steps">
+    <div class="step"><div class="lv">0</div><div class="nm">external</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="lv">1</div><div class="nm">recon</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="lv">2</div><div class="nm">web_user</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="lv">3</div><div class="nm">web_admin</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="lv">4</div><div class="nm">db_read</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="lv">5</div><div class="nm">shell</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="lv">6</div><div class="nm">root</div></div>
+    <div class="arrow">›</div>
+    <div class="step"><div class="lv">7</div><div class="nm">domain_admin</div></div>
+  </div>
+
+  <h2 style="margin-top:22px"><span class="n">02</span>推进循环（系统主流程）</h2>
+  <div class="steps" style="margin-top:12px">
+    <div class="step" style="border-color:var(--incalmo)"><div class="nm">① 立足点</div><div class="lv">当前状态</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="nm">② Coordinator</div><div class="lv">排序前沿·派机会</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="nm">③ Solver</div><div class="lv">CAS 领取·决策</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="nm">④ Executor</div><div class="lv">落地·确定判定成功</div></div>
+    <div class="arrow">→</div>
+    <div class="step" style="border-color:var(--artex)"><div class="nm">⑤ 攻击图</div><div class="lv">长出新立足点/凭据/主机</div></div>
+  </div>
+  <p class="mut" style="text-align:center;font-size:11px">⑤ 的新立足点触发新一轮内网 recon，回到 ① &nbsp;——&nbsp; 直到达成 goal 或前沿耗尽</p>
+
+  <div class="box" style="margin-top:18px;border-left:4px solid var(--xbow)">
+    <div class="bt">核心原则：Creative discovers, Deterministic decides <span class="tag t-xbow">XBOW</span></div>
+    <p class="mut" style="margin:4px 0 0">创造性由 LLM 负责（发现漏洞、规划路径）；"利用是否真的成功"由<b>确定性逻辑</b>判定（拿到 shell？dump 到数据？带外回连？）——LLM 永不自证。v1 的验证能力在这里复用，但降级为"动作成功判定"，服务推进而非列漏洞。</p>
+  </div>
+  <div class="foot"><span>VERITAS v2 · 架构设计</span><span>第一性原理 · 推进循环</span></div>
+</section>
+
+<!-- LAYERED ARCHITECTURE -->
+<section class="page">
+  <h2><span class="n">03</span>分层架构</h2>
+  <p class="mut">五个处理层（人 → 协调 → 舰队 → 执行 → 攻击图）+ 一条横切能力带。右上角色块标注每层的设计血缘。</p>
+
+  <div class="layer" style="border-left-color:var(--ink)">
+    <div class="lh"><span class="lt">Operator（人）</span></div>
+    <div class="ld">目标 / scope（含网段）/ 授权 / HITL 审批</div>
+  </div>
+
+  <div class="layer" style="border-left-color:var(--artex)">
+    <div class="lh"><span class="lt">Coordinator 协调者（持久、唯一规划者）</span>
+      <span class="srcs"><span class="tag t-artex">ARTEX</span><span class="tag t-bw">BW</span></span></div>
+    <div class="ld">读攻击图态势 → 按"访问跃迁收益"排序前沿 · 持有跨唤醒串行利用链 todolist（软状态，图为权威）· 事件驱动+debounce · Observer 旁路监督防偏移/早停</div>
+  </div>
+
+  <div class="layer" style="border-left-color:var(--xbow)">
+    <div class="lh"><span class="lt">Solver 舰队 ×N（并行，每个 fresh session）</span>
+      <span class="srcs"><span class="tag t-xbow">XBOW</span><span class="tag t-artex">ARTEX</span></span></div>
+    <div class="ld">CAS 领取前沿 · 默认按【分解】并行（不同资产/不同 kill-chain 步）· 单点难题才启局部【冗余重试】· 舰队间 search_all_worker_traces 共享过程与凭据（排除自己）</div>
+  </div>
+
+  <div class="layer" style="border-left-color:var(--incalmo)">
+    <div class="lh"><span class="lt">Executor 执行层（混合策略）</span>
+      <span class="srcs"><span class="tag t-incalmo">Incalmo</span><span class="tag t-strix">Strix</span></span></div>
+    <div class="sub-row">
+      <div class="chip"><b>A · 确定性动作执行器</b> <span class="tag t-incalmo">Incalmo</span><br><span class="mut">Scan / CrackHash / Login / LateralMove / OOB 验证 — 模式固定、确定性强、省上下文、可审计</span></div>
+      <div class="chip"><b>B · 自由沙箱执行器</b> <span class="tag t-strix">Strix</span><br><span class="mut">Web 漏洞挖掘与利用 — agent + Kali 沙箱 shell + 代理 + 浏览器 + 知识包，随机应变</span></div>
+    </div>
+    <div class="ld" style="margin-top:7px">两者结果都归一化写回攻击图 · "利用成功"确定性判定（creative/deterministic）</div>
+  </div>
+
+  <div class="layer" style="border-left-color:var(--cairn)">
+    <div class="lh"><span class="lt">Attack Graph 攻击图状态服务（= 黑板 / Stigmergy）</span>
+      <span class="srcs"><span class="tag t-cairn">Cairn</span><span class="tag t-artex">ARTEX</span></span></div>
+    <div class="ld">双图：资产真值图（全局，DB 唯一索引去重，upsert 自动串父子）+ 推进血缘图（每任务，kill-chain 边）+ 锚点溯源</div>
+  </div>
+
+  <div class="layer" style="border-left-color:var(--new);background:#fff">
+    <div class="lh"><span class="lt">横切能力</span></div>
+    <div class="sub-row">
+      <div class="chip">知识层 markdown skills（preload+按需）<span class="tag t-strix">Strix</span></div>
+      <div class="chip">记录型 MITM 留痕 + 出口代理 + CA 注入 <span class="tag t-artex">ARTEX</span></div>
+      <div class="chip">容器沙箱（Kali）<span class="tag t-strix">Strix</span></div>
+    </div>
+    <div class="sub-row">
+      <div class="chip">冷图 digest 压缩 <span class="tag t-artex">ARTEX</span></div>
+      <div class="chip">分级自主 / 审批门 <span class="tag t-artex">ARTEX</span></div>
+      <div class="chip">多 provider（LiteLLM）<span class="tag t-strix">Strix</span></div>
+    </div>
+    <div class="sub-row">
+      <div class="chip">跨 run 策略记忆（向量库）<span class="tag t-new">净新增</span></div>
+      <div class="chip">证据纪律 / 反蜜罐 <span class="tag t-new">v1</span></div>
+      <div class="chip">授权边界 scope（网段）</div>
+    </div>
+  </div>
+  <div class="foot"><span>VERITAS v2 · 架构设计</span><span>分层架构</span></div>
+</section>
+
+<!-- ATTACK GRAPH MODEL -->
+<section class="page">
+  <h2><span class="n">04</span>攻击图数据模型</h2>
+  <p class="mut">沿用 ARTEX 的双图 + 锚点，扩展出"访问权限推进"语义。资产真值图全局共享（去重交给 DB 唯一索引），推进血缘图按任务记录 kill chain。</p>
+
+  <svg viewBox="0 0 540 250" width="540" height="250" role="img" aria-label="攻击图数据模型">
+    <!-- 资产真值图 -->
+    <text x="12" y="16" class="svg-t" style="font-weight:700;fill:#059669">资产真值图（全局）</text>
+    <rect class="svg-n" x="12" y="28" width="86" height="24" rx="5" style="stroke:#059669"/><text x="22" y="43" class="svg-t">root_domain</text>
+    <rect class="svg-n" x="12" y="66" width="86" height="24" rx="5" style="stroke:#059669"/><text x="30" y="81" class="svg-t">subdomain</text>
+    <rect class="svg-n" x="12" y="104" width="86" height="24" rx="5" style="stroke:#059669"/><text x="46" y="119" class="svg-t">ip</text>
+    <rect class="svg-n" x="12" y="142" width="86" height="24" rx="5" style="stroke:#059669"/><text x="40" y="157" class="svg-t">service</text>
+    <rect class="svg-n" x="12" y="180" width="86" height="24" rx="5" style="stroke:#059669"/><text x="34" y="195" class="svg-t">endpoint</text>
+    <path class="svg-e" d="M55 52 V66"/><path class="svg-e" d="M55 90 V104"/><path class="svg-e" d="M55 128 V142"/><path class="svg-e" d="M55 166 V180"/>
+    <text x="104" y="100" class="svg-l">contains</text>
+    <rect class="svg-n" x="12" y="218" width="86" height="24" rx="5" style="stroke:#0891b2;stroke-dasharray:3 2"/><text x="30" y="233" class="svg-t">credential</text>
+    <rect class="svg-n" x="118" y="218" width="76" height="24" rx="5" style="stroke:#0891b2;stroke-dasharray:3 2"/><text x="146" y="233" class="svg-t">host</text>
+    <path class="svg-e" d="M98 230 H118" style="stroke:#0891b2"/><text x="100" y="214" class="svg-l" style="fill:#0891b2">can_access</text>
+
+    <!-- 锚点 -->
+    <path class="svg-e" d="M205 120 H250" style="stroke-dasharray:4 3"/>
+    <text x="206" y="113" class="svg-l">锚点 anchor</text>
+    <text x="206" y="134" class="svg-l">（溯源：谁碰过谁）</text>
+
+    <!-- 推进血缘图 -->
+    <text x="300" y="16" class="svg-t" style="font-weight:700;fill:#7c3aed">推进血缘图（每任务 · kill chain）</text>
+    <rect class="svg-n" x="300" y="28" width="70" height="22" rx="5" style="stroke:#7c3aed"/><text x="326" y="42" class="svg-t">goal</text>
+    <rect class="svg-n" x="300" y="70" width="86" height="22" rx="5" style="stroke:#7c3aed"/><text x="312" y="84" class="svg-t">foothold</text>
+    <rect class="svg-n" x="300" y="112" width="92" height="22" rx="5" style="stroke:#7c3aed"/><text x="308" y="126" class="svg-t">opportunity</text>
+    <rect class="svg-n" x="300" y="154" width="70" height="22" rx="5" style="stroke:#7c3aed"/><text x="316" y="168" class="svg-t">finding</text>
+    <rect class="svg-n" x="300" y="196" width="70" height="22" rx="5" style="stroke:#7c3aed"/><text x="324" y="210" class="svg-t">loot</text>
+
+    <path class="svg-e" d="M343 50 V70" style="stroke:#7c3aed"/><text x="348" y="64" class="svg-l">spawns</text>
+    <path class="svg-e" d="M343 92 V112" style="stroke:#7c3aed"/><text x="348" y="106" class="svg-l">derived_from</text>
+    <path class="svg-e" d="M346 134 V154" style="stroke:#7c3aed"/><text x="350" y="148" class="svg-l">exploits</text>
+    <path class="svg-e" d="M335 176 V196" style="stroke:#7c3aed"/><text x="340" y="190" class="svg-l">yields</text>
+    <path class="svg-e" d="M370 161 C 430 161 430 39 370 39" style="stroke:#7c3aed"/><text x="432" y="104" class="svg-l">proves</text>
+  </svg>
+
+  <h3>关键原语</h3>
+  <table>
+    <tr><th>原语</th><th>含义</th><th>角色</th></tr>
+    <tr><td class="k">Foothold</td><td>label + access_level + location</td><td>状态空间的<b>节点</b>，进展度量（初始 external）</td></tr>
+    <tr><td class="k">Opportunity</td><td>from_foothold + target_asset + kind + 期望跃迁</td><td>待走的一步（Coordinator 产，Solver 领）</td></tr>
+    <tr><td class="k">Finding</td><td>确认"这条边能走"的漏洞证据</td><td>不是终点，是可走的<b>边</b></td></tr>
+    <tr><td class="k">Credential / Loot</td><td>凭据 / 数据战利品</td><td>推进与横向的<b>燃料</b>；Loot 常常本身就是 goal</td></tr>
+  </table>
+  <div class="foot"><span>VERITAS v2 · 架构设计</span><span>攻击图数据模型</span></div>
+</section>
+
+<!-- DECISIONS + CLOSURE -->
+<section class="page">
+  <h2><span class="n">05</span>关键设计抉择（取 / 舍 / 融合）</h2>
+  <table>
+    <tr><th style="width:24%">抉择点</th><th style="width:30%">决定</th><th>理由</th></tr>
+    <tr><td class="k">决策/执行分层</td><td>混合：确定性动作走 Incalmo 式声明执行器；Web 利用走 Strix 式自由沙箱</td><td>Web 利用千变万化，固定动作集表达不了；横向/扫描/破解/登录模式固定、是状态骨架。<b>按动作确定性程度分治，不强塞。</b></td></tr>
+    <tr><td class="k">舰队策略</td><td>分解派生为主，局部冗余重试为辅</td><td>渗透是广度/多目标；全量冗余成本高。ARTEX 的"fresh session+图为权威+trace 互查"已解决累积错误。</td></tr>
+    <tr><td class="k">意图领取</td><td>条件 UPDATE CAS，弃 SKIP LOCKED</td><td>横向多 worker 抢同一前沿，CAS 无死锁无长事务，配崩溃重领更合适。</td></tr>
+    <tr><td class="k">执行器工具</td><td>沙箱 shell + 薄知识包，不逐个 wrap 工具</td><td>Strix 验证过：给 Kali 沙箱跑 CLI 比为每个扫描器写 wrapper 灵活。</td></tr>
+    <tr><td class="k">验证能力</td><td>降级为 Executor 的"动作成功判定"</td><td>v1 没白做——变成"利用是否真成功"的判定，服务推进而非列漏洞。</td></tr>
+    <tr><td class="k">上下文治理</td><td>冷图 digest 压缩 + 结构化安全 checkpoint</td><td>多主机横向让图爆炸，冷图是长程省成本关键，且算法层可直接移植。</td></tr>
+    <tr><td class="k">砍掉/后置</td><td>SARIF/auto-fix、资产同步、Web UI、MCP、复测</td><td>AppSec 修复/企业资产/运营设施，非挖洞+渗透内核，后期按需。</td></tr>
+  </table>
+
+  <h2 style="margin-top:20px"><span class="n">06</span>诚实的闭环判断</h2>
+  <table>
+    <tr><th>能力</th><th style="width:14%">能闭环</th><th>实际效果</th></tr>
+    <tr><td class="k">Web 漏洞挖掘（挖 HackerOne 主体）</td><td style="color:#059669;font-weight:700">✓ 能</td><td>达到活跃 bug hunter 的广度与速度，中低危有稳定产出；顶尖高危/业务逻辑仍需人。</td></tr>
+    <tr><td class="k">Web 利用链（dump→凭据→提权）</td><td style="color:#059669;font-weight:700">✓ 能</td><td>单机 web 走完"发现→利用→提权"串行链（v1 缺的核心）。</td></tr>
+    <tr><td class="k">Web→内网横向</td><td style="color:#ea580c;font-weight:700">半</td><td>靶场/已知 N-day 能闭环；真实企业内网（EDR/分段）是全行业能力边界 → 人机协同。</td></tr>
+    <tr><td class="k">后渗透/提权</td><td style="color:#ea580c;font-weight:700">半</td><td>已知提权可自动，复杂提权需人。</td></tr>
+  </table>
+  <p class="mut" style="font-size:10.5px;margin-top:8px"><b>定位：</b>自动化广度漏洞发现 + PoC 验证 + 已知路径横向。挖 HackerOne 这条线能产生真实价值且可闭环；全自动打穿真实域控是能力边界，设计上为 HITL 留接口，不假装全自动。</p>
+  <div class="foot"><span>VERITAS v2 · 架构设计</span><span>抉择 · 闭环判断</span></div>
+</section>
+
+<!-- ROADMAP -->
+<section class="page">
+  <h2><span class="n">07</span>路线图（按"完成什么样"定义，非时间）</h2>
+  <p class="mut">每个里程碑 = 一个可验证的能力状态。做完一个才进下一个。</p>
+  <div class="road" style="margin-top:14px">
+    <div class="m"><div class="mt">M0 · 骨架能推进 <span class="mono">（下一步）</span></div><div class="md">攻击图+Coordinator+Solver+Executor 接口齐备；mock 演示完整 kill chain（external→web_user→凭据→内网 host→shell），goal 达成即停、输出 kill chain。不接真实目标、不烧 token。<b>证明"推进"跑通。</b></div></div>
+    <div class="m"><div class="mt">M1 · 单机 Web 能真打</div><div class="md">external recon + 自由沙箱 Web Solver（Kali shell+代理+浏览器+知识包）对真实 web 靶标自主发现并利用漏洞，产出真实 foothold/credential 写回攻击图。靶标 Juice Shop。</div></div>
+    <div class="m"><div class="mt">M2 · Web 利用链闭环</div><div class="md">走完多步串行链 SQLi→dump→拿 hash→crack→用凭据登录→提权到 web_admin，由共享 todolist 按依赖调度。证据纪律在线（反蜜罐）。</div></div>
+    <div class="m"><div class="mt">M3 · 多主机横向闭环</div><div class="md">从 web 立足点内网发现 + 声明式横向动作（凭据复用/ssh/smb/winrm）+ pivot 代理，攻击图长出内网主机并拿到 shell@内网host。<b>"从 web 到内网横向"的验收点。</b></div></div>
+    <div class="m"><div class="mt">M4 · 规模化 + 结论可信</div><div class="md">并行 solver 舰队 + trace 协作 + Observer 监督 + 全链路 MITM 留痕 + kill chain 报告（带每一跳 PoC）。能并行多目标、结论不误报、报告可交付。</div></div>
+    <div class="m"><div class="mt">M5 · 长程 + 工程化</div><div class="md">冷图压缩 + 跨 run 策略记忆（向量库）+ 分级自主/审批门 + 多 provider + kill chain 可视化回放。</div></div>
+  </div>
+
+  <h3 style="margin-top:20px">代码结构</h3>
+  <div class="box"><pre class="mono" style="margin:0;font-size:9.5px;line-height:1.55;white-space:pre-wrap">veritas/
+  core/       attack_graph(board) · coordinator · solver · state(access) · events
+  executors/  deterministic/(scan,crack,login,lateral,oob) · freeform/(web_solver)
+  tools/      sandbox_shell · http_proxy · browser · oob_canary
+  recon/      external · internal
+  knowledge/  skills/*.md(frontmatter) + loader
+  runtime/    docker 沙箱(Kali) · report/ kill_chain+PoC · safety/ scope+审批+分级 · llm/ provider+compaction
+schema.sql · dispatch.yaml · cli.py</pre></div>
+  <div class="foot"><span>VERITAS v2 · 架构设计</span><span>路线图 · 代码结构</span></div>
+</section>
+
+</body>
+</html>

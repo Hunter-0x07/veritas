@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: veritas
+      POSTGRES_PASSWORD: veritas
+      POSTGRES_DB: veritas
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U veritas"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # W2：带外验证底座（SSRF/RCE/盲注用）。先占位，接入时取消注释。
+  # interactsh:
+  #   image: projectdiscovery/interactsh-server:latest
+  #   command: ["-domain", "oob.your.domain"]
+  #   ports: ["53:53/udp", "80:80", "443:443"]
+
+volumes:
+  pgdata:
+
+# W1 的 app 直接在宿主跑：
+#   pip install -r requirements.txt
+#   cp dispatch.example.yaml dispatch.yaml
+#   python -m veritas run --mock --target http://localhost:3000   # Juice Shop

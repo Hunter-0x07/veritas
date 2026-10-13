@@ -1,0 +1,48 @@
+# Veritas dispatcher 配置示例  →  cp dispatch.example.yaml dispatch.yaml
+
+database:
+  dsn: "postgresql://veritas:veritas@127.0.0.1:5432/veritas"
+
+llm:
+  # mock = 无需 key 的规则化闭环（决策是假的，validator 是真的）
+  # live = 接真实模型，让 LLM 自主探测 + 登记候选漏洞
+  mode: "mock"            # mock | live
+  model: "anthropic/claude-sonnet-4-6"
+  # 需要支持 function-calling 的模型。几种 provider 配法（任选其一，取消注释）：
+  #
+  # ① 智谱 GLM（OpenAI 兼容）
+  # model: "openai/glm-4.6"
+  # api_base: "https://open.bigmodel.cn/api/paas/v4"
+  # api_key_env: "GLM_API_KEY"          # export GLM_API_KEY=...
+  #
+  # ② 通义千问 Qwen（DashScope OpenAI 兼容）
+  # model: "openai/qwen-max"
+  # api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  # api_key_env: "DASHSCOPE_API_KEY"
+  #
+  # ③ OpenRouter（聚合，Strix 默认 GLM）
+  # model: "openrouter/z-ai/glm-4.6"
+  # api_key_env: "OPENROUTER_API_KEY"
+  #
+  # ④ Anthropic：model 用上面的默认值 + export ANTHROPIC_API_KEY=...（api_key_env 可不填）
+  #
+  # 推理强度（推理模型）：
+  # - GLM-5.3 强制开启思考、不能关；reasoning_effort 仅 low/high/max，默认 max。
+  #   降档省钱/提速（走 extra_body 最稳，避免 litellm drop 顶层参数）：
+  #   extra_body:
+  #     reasoning_effort: "high"
+
+runtime:
+  execution: "local"     # W1 实装 local（带无沙箱告警）；docker 留 Phase0 后续
+  workers: 2             # 并发 worker 数
+  debounce_seconds: 2    # 图变更后聚合多久再唤醒 planner
+  max_steps: 40          # 单意图 tool-use 步数上限
+  budget_usd: 2.0        # 任务预算上限（live 模式生效）
+
+# 授权边界 —— 安全底线，越界直接拒绝
+scope:
+  domains:
+    - "localhost"
+    - "127.0.0.1"
+  cidrs:
+    - "127.0.0.0/8"

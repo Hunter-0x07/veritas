@@ -1,0 +1,6 @@
+asyncpg>=0.30.0
+httpx>=0.27.0
+PyYAML>=6.0.2
+litellm>=1.50.0
+# XSS 执行级验证（可选）：装后需 `playwright install chromium`；不装则 XSS 裁决为 insufficient
+playwright>=1.47.0

@@ -15,9 +15,20 @@
 ## 状态
 
 - ✅ 架构设计完成
-- 🔜 **M0 · 骨架能推进**：攻击图 + Coordinator + Solver + Executor 接口 + mock 演示完整 kill chain
+- ✅ **M0 · 骨架能推进**：攻击图(双图/CAS) + Coordinator + Solver 舰队 + Executor 接口 + mock kill chain 跑通（`external → web_user → web_admin → shell@内网host`，goal 达成）
+- 🔜 **M1 · 单机 Web 真打**：external recon + 自由沙箱 Web Solver 对 Juice Shop 自主发现并利用漏洞
 
-路线：`M0 骨架能推进` → `M1 单机 Web 真打` → `M2 Web 利用链闭环` → `M3 多主机横向闭环` → `M4 规模化+结论可信` → `M5 长程+工程化`
+路线：`M0 骨架能推进 ✅` → `M1 单机 Web 真打` → `M2 Web 利用链闭环` → `M3 多主机横向闭环` → `M4 规模化+结论可信` → `M5 长程+工程化`
+
+## 运行（M0 mock）
+
+```bash
+pip install -e .                      # 或 pip install -r requirements.txt
+docker compose up -d postgres
+cp dispatch.example.yaml dispatch.yaml
+python -m veritas run --mock --target http://localhost:3000
+```
+输出一条 kill chain，报告写到 `veritas_runs/<task>/killchain.md`。
 
 ## 开发
 

@@ -1,0 +1,19 @@
+# Veritas M3 横向靶场：外网 web(命令注入) → 内网 ssh 主机
+# 关键：internal 网络不对外；attacker 只能到 edge，要打进内网必须经 edge pivot。
+networks:
+  frontend:
+    name: lateral-lab_frontend
+  internal:
+    name: lateral-lab_internal
+    internal: true        # 真正隔离：此网络不出外
+
+services:
+  edge:
+    build: ./edge
+    container_name: lab-edge
+    networks: [frontend, internal]   # 双网卡跳板
+
+  internal-host:
+    build: ./internal
+    container_name: lab-internal
+    networks: [internal]             # 只在内网，attacker 直连不到

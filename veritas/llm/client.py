@@ -18,6 +18,8 @@ class LLMClient:
         self.reasoning_effort = cfg.reasoning_effort
         self.extra_body = cfg.extra_body
         self.cost_usd = 0.0
+        self.tokens_in = 0
+        self.tokens_out = 0
 
     async def chat(self, messages: list[dict], tools: Optional[list[dict]] = None) -> Any:
         import litellm  # 延迟导入：mock 模式无需安装即可跑
@@ -37,6 +39,12 @@ class LLMClient:
         resp = await litellm.acompletion(**kw)
         try:
             self.cost_usd += float(litellm.completion_cost(resp) or 0.0)
+        except Exception:  # noqa: BLE001
+            pass
+        try:  # litellm 对 glm-5.3 常算不出单价($0)，至少累计 token 用量
+            u = resp.usage
+            self.tokens_in += int(getattr(u, "prompt_tokens", 0) or 0)
+            self.tokens_out += int(getattr(u, "completion_tokens", 0) or 0)
         except Exception:  # noqa: BLE001
             pass
         return resp.choices[0].message

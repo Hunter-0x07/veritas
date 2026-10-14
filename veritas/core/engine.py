@@ -63,6 +63,7 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
 
     report_path, reached, max_acc = await killchain.generate(board, task_id, target, goal)
     if llm is not None:
-        log.info("LLM 成本: $%.4f", llm.cost_usd)
+        log.info("LLM 用量: in=%d out=%d tokens · 估算成本 $%.4f（glm 实际费用以智谱后台为准）",
+                 llm.tokens_in, llm.tokens_out, llm.cost_usd)
     await pool.close()
     return task_id, report_path, reached, max_acc

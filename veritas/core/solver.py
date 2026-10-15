@@ -43,9 +43,9 @@ class Solver:
 
         if res.success:
             await self._apply(task_id, opp, res.transition)
+            if opp["target_asset"]:
+                await self.board.mark_asset_tested(opp["target_asset"])  # 成功才封边；失败留给难点重试
         await self.board.set_opportunity_state(opp["id"], "done" if res.success else "failed")
-        if opp["target_asset"]:
-            await self.board.mark_asset_tested(opp["target_asset"])
         await self.board.write_activity(task_id, opp["id"], self.wid, 1,
                                         {"kind": opp["kind"], "ok": res.success, "summary": res.summary})
         await self.board.emit_event(task_id, "transition")

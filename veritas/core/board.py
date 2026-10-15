@@ -113,6 +113,17 @@ class Board:
                 "SELECT count(*) FROM opportunities WHERE task_id=$1 AND state IN ('open','claimed')",
                 task_id)
 
+    async def opp_attempts(self, task_id: str, kind: str, from_foothold: Optional[int],
+                           target_asset: Optional[int]) -> int:
+        """同一前沿（kind + 起点 + 目标资产）已结束（done/failed）的尝试数，用于难点冗余重试封顶。"""
+        async with self.pool.acquire() as c:
+            return await c.fetchval(
+                """SELECT count(*) FROM opportunities
+                   WHERE task_id=$1 AND kind=$2 AND state IN ('done','failed')
+                     AND from_foothold IS NOT DISTINCT FROM $3
+                     AND target_asset  IS NOT DISTINCT FROM $4""",
+                task_id, kind, from_foothold, target_asset)
+
     # ---- 战利品 / 漏洞 / 边 ----
     async def add_credential(self, task_id: str, kind: str, *, username: str = "", secret: str = "",
                              source: str = "", props: Optional[dict] = None) -> int:
@@ -159,6 +170,32 @@ class Board:
     async def emit_event(self, task_id: str, etype: str) -> None:
         async with self.pool.acquire() as c:
             await c.execute("INSERT INTO events(task_id,type) VALUES($1,$2)", task_id, etype)
+
+    async def search_traces(self, task_id: str, query: str, *, exclude_worker: Optional[str] = None,
+                            limit: int = 15) -> list[asyncpg.Record]:
+        """跨 worker 过程检索（search_all_worker_traces）：舰队成员查别人跑过的命令/结果，
+        避免重复侦察、复用凭据线索。默认排除自己。"""
+        q = ("SELECT worker_id, step, content, created_at FROM activity "
+             "WHERE task_id=$1 AND content::text ILIKE '%'||$2||'%'")
+        args: list = [task_id, query]
+        if exclude_worker:
+            q += " AND worker_id IS DISTINCT FROM $3"
+            args.append(exclude_worker)
+        q += " ORDER BY id DESC LIMIT " + str(int(limit))
+        async with self.pool.acquire() as c:
+            return await c.fetch(q, *args)
+
+    async def activity_log(self, task_id: str) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as c:
+            return await c.fetch("SELECT * FROM activity WHERE task_id=$1 ORDER BY id", task_id)
+
+    async def foothold_edges(self, task_id: str) -> list[asyncpg.Record]:
+        """血缘边（限本任务的立足点之间），供报告还原并行分支。"""
+        async with self.pool.acquire() as c:
+            return await c.fetch(
+                """SELECT e.src, e.dst, e.rel FROM edges e
+                   JOIN footholds fs ON fs.id=e.src AND fs.task_id=$1
+                   JOIN footholds fd ON fd.id=e.dst AND fd.task_id=$1""", task_id)
 
     # ---- 读（report / kill chain）----
     async def loot(self, task_id: str) -> list[asyncpg.Record]:

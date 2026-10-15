@@ -1,7 +1,9 @@
 """推进引擎。
 
-M0 用回合制：Coordinator 派机会 → N 个 solver 并发 drain（CAS 领取）→ 下一轮，
-直到达成 goal 或前沿耗尽。纯事件驱动（debounce / LISTEN-NOTIFY）留 M4。
+回合制舰队：Coordinator 分解出多个并行前沿 → N 个 solver 并发 drain（CAS 领取）→ 下一轮，
+直到达成 goal 或前沿耗尽。M4 起 live 模式下**每个 solver 独享一个 Kali 沙箱**（fresh
+session，互不踩），舰队间只通过攻击图 + search_worker_traces 协作。
+纯事件驱动（debounce / LISTEN-NOTIFY）留 M5。
 """
 from __future__ import annotations
 
@@ -36,16 +38,21 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
     await board.emit_event(task_id, "task_started")
     log.info("任务 %s 启动 · 目标 %s · goal=%s · 模式 %s", task_id, target, goal, cfg.llm.mode)
 
+    nworkers = max(1, cfg.runtime.workers)
     llm = None
-    sandbox = None
-    if cfg.llm.mode == "live":
-        llm = LLMClient(cfg.llm)
-        sandbox = Sandbox(f"veritas-{task_id[:8]}", network=cfg.runtime.sandbox_network)
-        await sandbox.start()
-
+    sandboxes: list[Sandbox] = []
     coord = Coordinator(board, goal)
-    executors = build_registry(cfg.llm.mode, llm, sandbox)
-    solvers = [Solver(f"s{i}", board, executors) for i in range(max(1, cfg.runtime.workers))]
+
+    if cfg.llm.mode == "live":
+        # 每个 solver 独享一个 Kali 沙箱（舰队并行、互不踩），舰队间只经攻击图/trace 协作。
+        # 沙箱按需启动（solver 真正领到活才起），单目标跑不白占 N 个容器。
+        llm = LLMClient(cfg.llm)
+        sandboxes = [Sandbox(f"veritas-{task_id[:8]}-s{i}", network=cfg.runtime.sandbox_network)
+                     for i in range(nworkers)]
+        solvers = [Solver(f"s{i}", board, build_registry("live", llm, sandboxes[i]))
+                   for i in range(nworkers)]
+    else:
+        solvers = [Solver(f"s{i}", board, build_registry("mock")) for i in range(nworkers)]
 
     try:
         for rnd in range(1, cfg.runtime.max_rounds + 1):
@@ -54,14 +61,17 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
                 log.info("第 %d 轮：%s", rnd, "目标达成 ✓" if decision == "done" else "前沿耗尽")
                 break
             processed = await asyncio.gather(*[s.drain(task_id) for s in solvers])
-            log.info("第 %d 轮：%s，solver 处理 %d 条", rnd, decision, sum(processed))
+            busy = sum(1 for p in processed if p)
+            log.info("第 %d 轮：%s，舰队 %d/%d 并行就位，处理 %d 条",
+                     rnd, decision, busy, nworkers, sum(processed))
         else:
             log.warning("达到轮次上限 %d，强制结束", cfg.runtime.max_rounds)
     finally:
-        if sandbox is not None:
-            await sandbox.stop()
+        if sandboxes:
+            await asyncio.gather(*[sb.stop() for sb in sandboxes], return_exceptions=True)
 
-    report_path, reached, max_acc = await killchain.generate(board, task_id, target, goal)
+    report_path, reached, max_acc = await killchain.generate(board, task_id, target, goal,
+                                                             mode=cfg.llm.mode)
     if llm is not None:
         log.info("LLM 用量: in=%d out=%d tokens · 估算成本 $%.4f（glm 实际费用以智谱后台为准）",
                  llm.tokens_in, llm.tokens_out, llm.cost_usd)

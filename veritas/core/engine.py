@@ -40,7 +40,7 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
     sandbox = None
     if cfg.llm.mode == "live":
         llm = LLMClient(cfg.llm)
-        sandbox = Sandbox(f"veritas-{task_id[:8]}")
+        sandbox = Sandbox(f"veritas-{task_id[:8]}", network=cfg.runtime.sandbox_network)
         await sandbox.start()
 
     coord = Coordinator(board, goal)

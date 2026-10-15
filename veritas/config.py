@@ -29,6 +29,7 @@ class RuntimeCfg:
     workers: int = 2
     max_rounds: int = 30
     budget_usd: float = 5.0
+    sandbox_network: str = "host"   # M3 横向：连靶场 frontend 网，让 attacker 只能到 edge
 
 
 @dataclass

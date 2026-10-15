@@ -18,7 +18,9 @@ from ..report import killchain
 from ..runtime import Sandbox
 from .board import Board
 from .coordinator import Coordinator
+from .observer import Observer
 from .solver import Solver
+from .verifier import Verifier
 
 log = logging.getLogger("veritas.engine")
 
@@ -42,6 +44,8 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
     llm = None
     sandboxes: list[Sandbox] = []
     coord = Coordinator(board, goal)
+    verifier = Verifier(cfg.llm.mode)      # 证据确定性验证层（防幻觉）
+    observer = Observer(board, goal)       # 旁路监督（失速/鬼打墙/早停·误报）
 
     if cfg.llm.mode == "live":
         # 每个 solver 独享一个 Kali 沙箱（舰队并行、互不踩），舰队间只经攻击图/trace 协作。
@@ -49,11 +53,13 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
         llm = LLMClient(cfg.llm)
         sandboxes = [Sandbox(f"veritas-{task_id[:8]}-s{i}", network=cfg.runtime.sandbox_network)
                      for i in range(nworkers)]
-        solvers = [Solver(f"s{i}", board, build_registry("live", llm, sandboxes[i]))
+        solvers = [Solver(f"s{i}", board, build_registry("live", llm, sandboxes[i]), verifier)
                    for i in range(nworkers)]
     else:
-        solvers = [Solver(f"s{i}", board, build_registry("mock")) for i in range(nworkers)]
+        solvers = [Solver(f"s{i}", board, build_registry("mock"), verifier)
+                   for i in range(nworkers)]
 
+    decision = "init"
     try:
         for rnd in range(1, cfg.runtime.max_rounds + 1):
             decision = await coord.plan(task_id)
@@ -64,8 +70,11 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
             busy = sum(1 for p in processed if p)
             log.info("第 %d 轮：%s，舰队 %d/%d 并行就位，处理 %d 条",
                      rnd, decision, busy, nworkers, sum(processed))
+            await observer.observe(task_id, rnd, decision)
         else:
+            decision = "maxrounds"
             log.warning("达到轮次上限 %d，强制结束", cfg.runtime.max_rounds)
+        await observer.conclude(task_id, decision)
     finally:
         if sandboxes:
             await asyncio.gather(*[sb.stop() for sb in sandboxes], return_exceptions=True)

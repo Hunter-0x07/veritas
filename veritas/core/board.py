@@ -30,28 +30,38 @@ class Board:
 
     # ---- footholds ----
     async def add_foothold(self, task_id: str, label: str, access_level: str,
-                           location: Optional[str] = None, props: Optional[dict] = None) -> int:
+                           location: Optional[str] = None, props: Optional[dict] = None,
+                           verdict: str = "verified") -> int:
         async with self.pool.acquire() as c:
             return await c.fetchval(
-                """INSERT INTO footholds(task_id,label,access_level,location,props)
-                   VALUES($1,$2,$3,$4,$5)
-                   ON CONFLICT (task_id,label) DO UPDATE SET access_level=EXCLUDED.access_level
+                """INSERT INTO footholds(task_id,label,access_level,location,props,verdict)
+                   VALUES($1,$2,$3,$4,$5,$6)
+                   ON CONFLICT (task_id,label) DO UPDATE
+                     SET access_level=EXCLUDED.access_level, verdict=EXCLUDED.verdict
                    RETURNING id""",
-                task_id, label, access_level, location, props or {})
+                task_id, label, access_level, location, props or {}, verdict)
 
     async def footholds(self, task_id: str) -> list[asyncpg.Record]:
         async with self.pool.acquire() as c:
             return await c.fetch("SELECT * FROM footholds WHERE task_id=$1 ORDER BY id", task_id)
 
-    async def max_access(self, task_id: str) -> str:
+    async def max_access(self, task_id: str, verified_only: bool = True) -> str:
+        """渗透进展度量。默认只认 verified 立足点（防幻觉：未过证据验证的声称不计入进展）。"""
         best = "external"
         for r in await self.footholds(task_id):
+            if verified_only and r["verdict"] != "verified":
+                continue
             if rank(r["access_level"]) > rank(best):
                 best = r["access_level"]
         return best
 
     async def goal_reached(self, task_id: str, goal_level: str) -> bool:
         return rank(await self.max_access(task_id)) >= rank(goal_level)
+
+    async def exec_traces(self, task_id: str) -> list[dict]:
+        """真实 sandbox 执行记录（命令/退出码/输出），供 Verifier 证据溯源。"""
+        rows = await self.activity_log(task_id)
+        return [c for c in ((r["content"] or {}) for r in rows) if "exec" in c]
 
     # ---- assets ----
     async def add_asset(self, task_id: str, atype: str, dedup_key: str, *,
@@ -126,14 +136,16 @@ class Board:
 
     # ---- 战利品 / 漏洞 / 边 ----
     async def add_credential(self, task_id: str, kind: str, *, username: str = "", secret: str = "",
-                             source: str = "", props: Optional[dict] = None) -> int:
+                             source: str = "", props: Optional[dict] = None,
+                             verdict: str = "verified") -> int:
         async with self.pool.acquire() as c:
             return await c.fetchval(
-                """INSERT INTO credentials(task_id,kind,username,secret,source,props)
-                   VALUES($1,$2,$3,$4,$5,$6)
-                   ON CONFLICT (task_id,kind,username,secret) DO UPDATE SET source=EXCLUDED.source
+                """INSERT INTO credentials(task_id,kind,username,secret,source,props,verdict)
+                   VALUES($1,$2,$3,$4,$5,$6,$7)
+                   ON CONFLICT (task_id,kind,username,secret) DO UPDATE
+                     SET source=EXCLUDED.source, verdict=EXCLUDED.verdict
                    RETURNING id""",
-                task_id, kind, username, secret, source, props or {})
+                task_id, kind, username, secret, source, props or {}, verdict)
 
     async def credentials(self, task_id: str) -> list[asyncpg.Record]:
         async with self.pool.acquire() as c:

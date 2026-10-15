@@ -27,8 +27,9 @@ def _render_tree(by_id, children, roots) -> list[str]:
         f = by_id[fid]
         indent = "  " * depth
         arrow = "└─ " if depth else ""
+        badge = "" if f["verdict"] == "verified" else " ⚠️未验证"
         lines.append(f"{indent}{arrow}`{f['access_level']}` · {f['label']}"
-                     + (f"  ({f['location']})" if f["location"] else ""))
+                     + (f"  ({f['location']})" if f["location"] else "") + badge)
         for ch in sorted(children[fid], key=lambda i: rank(by_id[i]["access_level"])):
             walk(ch, depth + 1)
 
@@ -69,7 +70,8 @@ async def generate(board, task_id: str, target: str, goal: str,
     lines += ["", "## 每一跳 · 立足点与 PoC", ""]
     for f in sorted(footholds, key=lambda x: rank(x["access_level"])):
         ev = (f["props"] or {}).get("evidence", "")
-        lines.append(f"### `{f['access_level']}` — {f['label']}")
+        badge = "✅ verified" if f["verdict"] == "verified" else "⚠️ unverified（不计入进展）"
+        lines.append(f"### `{f['access_level']}` — {f['label']}  · {badge}")
         if f["location"]:
             lines.append(f"- 位置: `{f['location']}`")
         if ev:
@@ -77,7 +79,8 @@ async def generate(board, task_id: str, target: str, goal: str,
         lines.append("")
 
     lines += ["## 战利品 · 凭据", ""]
-    lines += [f"- [{c['kind']}] `{c['username']}:{c['secret']}` ← {c['source']}" for c in creds] or ["- （无）"]
+    lines += [f"- [{c['kind']}] `{c['username']}:{c['secret']}` ← {c['source']}"
+              + ("" if c["verdict"] == "verified" else " ⚠️未验证") for c in creds] or ["- （无）"]
     lines += ["", "## 战利品 · 数据", ""]
     lines += [f"- [{lo['kind']}] {lo['summary']}" for lo in loots] or ["- （无）"]
     lines += ["", "## 漏洞（可走的边）", ""]
@@ -104,9 +107,25 @@ async def generate(board, task_id: str, target: str, goal: str,
             lines.append(c.get("exec", ""))
         lines.append("```")
 
+    # 结论可信度：证据验证 + Observer 监督
+    obs = [a for a in acts if (a["content"] or {}).get("observer")]
+    unver = [f for f in footholds if f["verdict"] != "verified"]
+    trustworthy = reached and not obs
+    lines += ["", "## 结论可信度", ""]
+    lines.append("- 总体: " + ("✅ 结论可信（目标达成，立足点均过证据验证，无监督告警）"
+                               if trustworthy else "⚠️ 存在存疑项，见下"))
+    verified_n = sum(1 for f in footholds if f["verdict"] == "verified")
+    lines.append(f"- 证据验证: {verified_n} 个立足点 verified · {len(unver)} 个 unverified"
+                 f"（unverified 不计入进展，{'最终' if not reached else ''}verified 访问 `{max_acc}`）")
+    if obs:
+        lines.append("- 监督 / 验证发现:")
+        for a in obs:
+            c = a["content"]
+            lines.append(f"  - [{a['worker_id']}·{c.get('observer')}] {c.get('detail', '')}")
+
     lines += ["", "---",
-              f"> 执行器模式: {mode}。证据纪律：登记的立足点/凭据均由 solver 的真实输出支撑；"
-              "结论可信性与 MITM 全链路留痕见 M4 后续刀。"]
+              f"> 执行器模式: {mode}。防幻觉：登记的立足点/凭据经证据确定性验证层裁决，"
+              "只有 verified 计入访问进展；Observer 旁路监督失速/鬼打墙/早停。MITM 全链路留痕见 M4 后续刀。"]
 
     (run_dir / "killchain.md").write_text("\n".join(lines), encoding="utf-8")
     return run_dir / "killchain.md", reached, max_acc

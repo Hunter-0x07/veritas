@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS footholds (
   label        TEXT NOT NULL,              -- 人读标签，如 shell@10.0.0.5
   access_level TEXT NOT NULL,              -- external/recon/web_user/web_admin/db_read/shell/root/domain_admin
   location     TEXT,                       -- 立足点所在：URL/主机/服务
+  verdict      TEXT NOT NULL DEFAULT 'verified', -- 证据判定：verified/unverified（防幻觉，只 verified 计入进展）
   props        JSONB DEFAULT '{}',
   created_at   TIMESTAMPTZ DEFAULT now(),
   UNIQUE (task_id, label)
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS credentials (
   username   TEXT,
   secret     TEXT,
   source     TEXT,
+  verdict    TEXT NOT NULL DEFAULT 'verified', -- 证据判定：verified/unverified
   props      JSONB DEFAULT '{}',
   created_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE (task_id, kind, username, secret)
@@ -104,3 +106,7 @@ CREATE TABLE IF NOT EXISTS activity (
 CREATE TABLE IF NOT EXISTS events (
   id BIGSERIAL PRIMARY KEY, task_id TEXT, type TEXT, created_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- 旧库迁移：补 verdict 列（幂等，建表在前故放末尾）
+ALTER TABLE footholds   ADD COLUMN IF NOT EXISTS verdict TEXT NOT NULL DEFAULT 'verified';
+ALTER TABLE credentials ADD COLUMN IF NOT EXISTS verdict TEXT NOT NULL DEFAULT 'verified';

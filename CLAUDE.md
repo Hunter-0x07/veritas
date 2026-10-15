@@ -19,8 +19,8 @@
 - **M1** 单机 Web 真打(Kali 沙箱 + GLM-5.3 Web Solver 自由 tool-use) ✅ — 自主打穿 Juice Shop：recon→SQLi 认证绕过→UNION dump 全库+支付卡+破解哈希
 - **M2** 利用链 — GLM 单 solver 自发完成（未单独实现）✅
 - **M3** 内网横向(靶场 `targets/lateral-lab`) ✅ — GLM 自主发现命令注入→**自封装 pivot helper `c()`**→读凭据→ssh 横向→`shell@internal` + flag。kill chain: external→shell→root
-- **M4** 规模化+结论可信 🚧 **三刀码齐、待 live 整链验证** — ① 舰队真并行(Coordinator 按资产分解 fan-out + CAS + 每 solver 独享按需沙箱 + 难点重试封顶) + trace 协作(`search_worker_traces`)；② 证据确定性验证层(`verifier` 判 verdict，`max_access` 只认 verified·防幻觉) + Observer 监督(`observer` 失速/鬼打墙/早停·误报)；③ 全链路 MITM 留痕(`runtime/mitm` 沙箱内 mitmdump+CA 注入→`http_flows`，报告每跳 curl 可复现) + `repeat_request`。**mock 闭环 + 单测 + 真 MITM 管线测全绿；live（GLM+靶场）未跑。**
-- **下一步候选**：**M4 live 整链验证**(GLM+Juice Shop+横向靶场，校验据溯源阈值) · 多"根目标"并行(当前单任务内多资产 fan-out) · 真 SOCKS pivot · AD 域靶场 · M5(冷图压缩/跨 run 策略记忆/审批门) · build-in-public 素材
+- **M4** 规模化+结论可信 ✅ **三刀落地 + live 整链通过** — ① 舰队真并行(Coordinator 按资产分解 fan-out + CAS + 每 solver 独享按需沙箱 + 难点重试封顶) + trace 协作(`search_worker_traces`)；② 证据确定性验证层(`verifier` 判 verdict，`max_access` 只认 verified·防幻觉) + Observer 监督(`observer` 失速/鬼打墙/早停·误报)；③ 全链路 MITM 留痕(`runtime/mitm` 沙箱内 mitmdump+CA 注入→`http_flows`，报告每跳 curl 可复现) + `repeat_request`。kill-chain 树按访问级别串 pivot 父子链(还原 edge→internal)。**live 实证**(task `6df1fb958887`)：GLM 单 solver 打穿 lateral-lab→拿内网 shell+flag，立足点/凭据全 verified、Observer 零告警、MITM 54 条真流量入库可 curl 复现。
+- **下一步候选**：多"根目标"并行(当前单任务内多资产 fan-out) · 真 SOCKS pivot · AD 域靶场 · M5(冷图压缩/跨 run 策略记忆/审批门) · build-in-public 素材(M4 live 报告现成)
 
 ## 代码结构
 ```

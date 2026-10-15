@@ -8,6 +8,7 @@ import logging
 
 from ..executors import Executor
 from .board import Board
+from .state import rank
 from .verifier import Verifier
 
 log = logging.getLogger("veritas.solver")
@@ -58,7 +59,11 @@ class Solver:
         """把跃迁落进攻击图，并连 kill-chain 血缘边。证据确定性验证层在此裁决 verdict。"""
         src = opp["from_foothold"]
         traces = await self.board.exec_traces(task_id)  # 真实 sandbox 记录，供证据溯源
-        for f in tr.footholds:
+        # 同一 transition 内按(访问级别,上报顺序)把立足点串成链：还原 pivot 父子（如 edge→internal），
+        # 而非都挂在 from_foothold 下拍平成平行分支。单立足点 transition 退化为挂 from_foothold（不变）。
+        prev = src
+        ordered = sorted(enumerate(tr.footholds), key=lambda t: (rank(t[1]["access_level"]), t[0]))
+        for _, f in ordered:
             ev = (f.get("props") or {}).get("evidence", "")
             verdict = self.verifier.foothold(f["access_level"], f.get("location") or "", ev, traces)
             if verdict != "verified":
@@ -69,9 +74,10 @@ class Solver:
                      "detail": f"{f['label']} 声称 {f['access_level']} 但证据未溯源到真实输出"})
             fid = await self.board.add_foothold(task_id, f["label"], f["access_level"],
                                                 f.get("location"), f.get("props"), verdict=verdict)
-            if src:
-                rel = "pivots_to" if f["access_level"] == "shell" else "exploits"
-                await self.board.add_edge(src, fid, rel, "foothold")
+            if prev and prev != fid:
+                rel = "pivots_to" if rank(f["access_level"]) >= rank("shell") else "exploits"
+                await self.board.add_edge(prev, fid, rel, "foothold")
+            prev = fid
         for cr in tr.credentials:
             verdict = self.verifier.credential(cr.get("secret", ""), cr.get("username", ""), traces)
             await self.board.add_credential(task_id, cr["kind"], username=cr.get("username", ""),

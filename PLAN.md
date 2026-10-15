@@ -124,13 +124,14 @@ Veritas v1 做成了"漏洞验证器"（确认 SQLi/XSS 三态裁决就结束）
 - **M3 · 多主机横向闭环**
   完成定义：从 web 立足点做 internal recon 发现内网主机 + 声明式横向动作执行器（凭据复用/ssh/smb/winrm）+ pivot 代理，攻击图长出内网主机并拿到 `shell@内网host`。靶标：自搭 web+内网 docker 网络靶场（或 Incalmo MHBench 式）。**这是"从 web 到内网横向"的验收点。**
 
-- **M4 · 规模化 + 结论可信** — 🚧 三刀码齐，待 live 整链验证
+- **M4 · 规模化 + 结论可信** — ✅ 三刀落地 + live 整链验证通过（2026-10-15）
   完成定义：并行 solver 舰队（分解+难点冗余重试）+ trace 协作 + Observer 监督 + 全链路 MITM 留痕 + kill chain 报告（带每一跳 PoC 与复现）。能并行多目标、结论不误报、报告可交付。可对 HackerOne 风格的授权目标跑。
   **已落地（2026-10-15，三刀）**：
   - 第一刀·规模化：Coordinator 同阶段按资产分解 fan-out（多 web 资产/多内网主机各出前沿）+ CAS 并行领取 + 每 solver 独享按需启动的 Kali 沙箱；难点卡住按 `MAX_ATTEMPTS` 冗余重试、超限放弃；`search_worker_traces` 跨 worker 共享侦察/凭据线索。
   - 第二刀·结论可信：证据确定性验证层（`core/verifier.py`）给每个立足点/凭据判 `verdict`，`max_access`/goal 只认 `verified`（防幻觉、不误报）；Observer（`core/observer.py`）旁路监督失速/鬼打墙/早停·误报（确定性）。
   - 第三刀·留痕：每个沙箱起记录型 `mitmdump` 代理 + CA 注入（`runtime/mitm.py`），全链路 HTTP 透明抓取入 `http_flows`，报告每跳 curl 可复现；新增 `repeat_request` 原子重放。
-  **验证状态**：mock 闭环 + 舰队/重试/trace/验证器/Observer 针对性单测 + 真 MITM 管线测（起沙箱+mitmdump 实抓）全绿；**整条 live（GLM+Juice Shop+横向靶场）尚未跑**，live 下证据溯源阈值可能需调；**多"根目标"并行**（当前是单任务内多资产 fan-out）待做。
+  - kill-chain 树：同一 transition 内多立足点按(访问级别,上报顺序)串父子，还原 pivot 链（`edge→internal`），不再拍平成平行分支。
+  **验证状态**：mock 闭环 + 针对性单测（舰队/重试/trace/验证器/Observer/pivot 链）+ 真 MITM 管线测全绿；**live 整链已通过**——GLM 单 solver 打穿 lateral-lab（lab-edge `/ping` 命令注入→root RCE→ssh 横向 internal-host 拿 `shell`+flag），2 立足点+deploy 凭据全过证据验证(`verdict=verified`)、Observer 零告警、MITM 抓 54 条真流量入库、报告每跳 curl 可复现（task `6df1fb958887`）。遗留：**多"根目标"并行**（当前是单任务内多资产 fan-out）；成本显示 $0 是 litellm 对 glm 定价的已知 bug（实际用量 ~284K in / 10.6K out）。
 
 - **M5 · 长程 + 工程化**
   完成定义：冷图压缩落地（控长程成本）+ 跨 run 策略记忆（向量库复用成功 kill chain）+ 分级自主/审批门（横向/破坏性 HITL）+ 多 provider + kill chain 可视化回放。

@@ -2,9 +2,24 @@
 from __future__ import annotations
 
 import pathlib
+import shlex
 import time
 
 from ..core.state import meets_goal, rank
+
+_SKIP_HDR = {"host", "content-length", "proxy-connection", "connection"}
+
+
+def _curl(f) -> str:
+    """把一条抓到的 HTTP 流渲染成可复现的 curl 命令。"""
+    parts = [f"curl -i -X {f['method']} {shlex.quote(f['url'] or '')}"]
+    for k, v in (f["req_headers"] or {}).items():
+        if k.lower() in _SKIP_HDR:
+            continue
+        parts.append(f"-H {shlex.quote(f'{k}: {v}')}")
+    if f["req_body"]:
+        parts.append(f"--data {shlex.quote(f['req_body'])}")
+    return " ".join(parts)
 
 
 def _build_tree(footholds, edges):
@@ -46,6 +61,7 @@ async def generate(board, task_id: str, target: str, goal: str,
     loots = await board.loot(task_id)
     findings = await board.findings(task_id)
     acts = await board.activity_log(task_id)
+    flows = await board.http_flows(task_id)
     max_acc = await board.max_access(task_id)
     reached = meets_goal(max_acc, goal)
 
@@ -107,6 +123,23 @@ async def generate(board, task_id: str, target: str, goal: str,
             lines.append(c.get("exec", ""))
         lines.append("```")
 
+    # 全链路 HTTP 留痕（MITM）：每条请求都可 curl 复现
+    lines += ["", "## 全链路 HTTP 留痕（MITM）", ""]
+    if not flows:
+        lines.append("- （本次无 HTTP 留痕；mock 或未经沙箱代理）")
+    else:
+        lines.append(f"- 共抓取 **{len(flows)}** 条 HTTP 流（记录型代理透明留痕，逐条可复现）")
+        lines.append("")
+        for f in flows[:40]:
+            lines.append(f"- `{f['method']} {f['url']}` → {f['status']}")
+        if len(flows) > 40:
+            lines.append(f"- …另有 {len(flows) - 40} 条")
+        key = [f for f in flows if f["req_body"]] or list(flows)
+        lines += ["", "### 原始请求（curl 可复现）", "", "```bash"]
+        for f in key[:12]:
+            lines.append(_curl(f))
+        lines.append("```")
+
     # 结论可信度：证据验证 + Observer 监督
     obs = [a for a in acts if (a["content"] or {}).get("observer")]
     unver = [f for f in footholds if f["verdict"] != "verified"]
@@ -125,7 +158,8 @@ async def generate(board, task_id: str, target: str, goal: str,
 
     lines += ["", "---",
               f"> 执行器模式: {mode}。防幻觉：登记的立足点/凭据经证据确定性验证层裁决，"
-              "只有 verified 计入访问进展；Observer 旁路监督失速/鬼打墙/早停。MITM 全链路留痕见 M4 后续刀。"]
+              "只有 verified 计入访问进展；Observer 旁路监督失速/鬼打墙/早停；"
+              "全链路 HTTP 经记录型 MITM 代理留痕，每跳请求可 curl 复现。"]
 
     (run_dir / "killchain.md").write_text("\n".join(lines), encoding="utf-8")
     return run_dir / "killchain.md", reached, max_acc

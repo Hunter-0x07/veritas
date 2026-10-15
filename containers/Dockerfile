@@ -5,9 +5,10 @@
 # 不含 everything 的无线/取证/硬件工具，省体积。缺个别工具再 apt install。
 FROM kalilinux/kali-rolling
 
+# mitmproxy：全链路 MITM 留痕用的记录型代理（kali-linux-default 已含，显式声明防基镜像漂移）
 RUN printf 'Acquire::Retries "8";\n' > /etc/apt/apt.conf.d/80retries \
     && apt-get update \
-    && apt-get install -y --no-install-recommends kali-linux-default python3-pip \
+    && apt-get install -y --no-install-recommends kali-linux-default python3-pip mitmproxy \
     && rm -rf /var/lib/apt/lists/*
 
 # 我们自己写 PoC/脚本用的 Python 库

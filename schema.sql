@@ -107,6 +107,24 @@ CREATE TABLE IF NOT EXISTS events (
   id BIGSERIAL PRIMARY KEY, task_id TEXT, type TEXT, created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- 全链路 MITM 留痕：记录型代理抓到的每条 HTTP 请求/响应（每跳 PoC 的原始可复现证据）
+CREATE TABLE IF NOT EXISTS http_flows (
+  id           BIGSERIAL PRIMARY KEY,
+  task_id      TEXT NOT NULL,
+  worker_id    TEXT,
+  method       TEXT,
+  url          TEXT,
+  host         TEXT,
+  status       INT,
+  req_headers  JSONB DEFAULT '{}',
+  req_body     TEXT,
+  resp_headers JSONB DEFAULT '{}',
+  resp_body    TEXT,
+  ts           DOUBLE PRECISION,           -- 请求开始时间（排序/对齐 activity）
+  created_at   TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_flow_task ON http_flows(task_id, id);
+
 -- 旧库迁移：补 verdict 列（幂等，建表在前故放末尾）
 ALTER TABLE footholds   ADD COLUMN IF NOT EXISTS verdict TEXT NOT NULL DEFAULT 'verified';
 ALTER TABLE credentials ADD COLUMN IF NOT EXISTS verdict TEXT NOT NULL DEFAULT 'verified';

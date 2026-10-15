@@ -183,6 +183,25 @@ class Board:
         async with self.pool.acquire() as c:
             await c.execute("INSERT INTO events(task_id,type) VALUES($1,$2)", task_id, etype)
 
+    async def add_http_flows(self, task_id: str, worker_id: str, flows: list[dict]) -> int:
+        """批量落库 MITM 抓到的 HTTP 流。返回写入条数。"""
+        if not flows:
+            return 0
+        rows = [(task_id, worker_id, f.get("method"), f.get("url"), f.get("host"),
+                 f.get("status"), f.get("req_headers") or {}, f.get("req_body"),
+                 f.get("resp_headers") or {}, f.get("resp_body"), f.get("ts"))
+                for f in flows]
+        async with self.pool.acquire() as c:
+            await c.executemany(
+                """INSERT INTO http_flows(task_id,worker_id,method,url,host,status,
+                       req_headers,req_body,resp_headers,resp_body,ts)
+                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""", rows)
+        return len(rows)
+
+    async def http_flows(self, task_id: str) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as c:
+            return await c.fetch("SELECT * FROM http_flows WHERE task_id=$1 ORDER BY id", task_id)
+
     async def search_traces(self, task_id: str, query: str, *, exclude_worker: Optional[str] = None,
                             limit: int = 15) -> list[asyncpg.Record]:
         """跨 worker 过程检索（search_all_worker_traces）：舰队成员查别人跑过的命令/结果，

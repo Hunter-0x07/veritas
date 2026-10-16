@@ -58,28 +58,34 @@ class Solver:
     async def _apply(self, task_id: str, opp, tr) -> None:
         """把跃迁落进攻击图，并连 kill-chain 血缘边。证据确定性验证层在此裁决 verdict。"""
         src = opp["from_foothold"]
-        traces = await self.board.exec_traces(task_id)  # 真实 sandbox 记录，供证据溯源
+        traces = await self.board.exec_traces(task_id)  # 真实 sandbox 记录 = 验证的"世界底物"
+        # 先判凭据，收集已 verified 的密文供立足点佐证（如 DCSync 的 NT hash 佐证 domain_admin）
+        cred_verdicts = [self.verifier.credential(cr.get("secret", ""), cr.get("username", ""), traces)
+                         for cr in tr.credentials]
+        verified_secrets = [cr.get("secret", "") for cr, v in zip(tr.credentials, cred_verdicts)
+                            if v == "verified" and cr.get("secret")]
         # 同一 transition 内按(访问级别,上报顺序)把立足点串成链：还原 pivot 父子（如 edge→internal），
         # 而非都挂在 from_foothold 下拍平成平行分支。单立足点 transition 退化为挂 from_foothold（不变）。
         prev = src
         ordered = sorted(enumerate(tr.footholds), key=lambda t: (rank(t[1]["access_level"]), t[0]))
         for _, f in ordered:
             ev = (f.get("props") or {}).get("evidence", "")
-            verdict = self.verifier.foothold(f["access_level"], f.get("location") or "", ev, traces)
+            # verdict 由 verifier 从"世界"按级别举证义务自推导；evidence/location 只当线索
+            verdict = self.verifier.foothold(f["access_level"], f.get("location") or "", ev,
+                                             traces, verified_secrets)
             if verdict != "verified":
-                log.warning("solver %s · 立足点 %s(%s) 证据不足 → %s（不计入进展）",
+                log.warning("solver %s · 立足点 %s(%s) → %s（不计入进展）",
                             self.wid, f["label"], f["access_level"], verdict)
                 await self.board.write_activity(task_id, opp["id"], "verifier", 0,
-                    {"observer": "unverified_foothold",
-                     "detail": f"{f['label']} 声称 {f['access_level']} 但证据未溯源到真实输出"})
+                    {"observer": f"{verdict}_foothold",
+                     "detail": f"{f['label']} 声称 {f['access_level']}，世界里无对应举证 → {verdict}"})
             fid = await self.board.add_foothold(task_id, f["label"], f["access_level"],
                                                 f.get("location"), f.get("props"), verdict=verdict)
             if prev and prev != fid:
                 rel = "pivots_to" if rank(f["access_level"]) >= rank("shell") else "exploits"
                 await self.board.add_edge(prev, fid, rel, "foothold")
             prev = fid
-        for cr in tr.credentials:
-            verdict = self.verifier.credential(cr.get("secret", ""), cr.get("username", ""), traces)
+        for cr, verdict in zip(tr.credentials, cred_verdicts):
             await self.board.add_credential(task_id, cr["kind"], username=cr.get("username", ""),
                                              secret=cr.get("secret", ""), source=cr.get("source", ""),
                                              verdict=verdict)

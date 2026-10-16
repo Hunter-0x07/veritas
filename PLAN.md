@@ -133,8 +133,22 @@ Veritas v1 做成了"漏洞验证器"（确认 SQLi/XSS 三态裁决就结束）
   - kill-chain 树：同一 transition 内多立足点按(访问级别,上报顺序)串父子，还原 pivot 链（`edge→internal`），不再拍平成平行分支。
   **验证状态**：mock 闭环 + 针对性单测（舰队/重试/trace/验证器/Observer/pivot 链）+ 真 MITM 管线测全绿；**live 整链已通过**——GLM 单 solver 打穿 lateral-lab（lab-edge `/ping` 命令注入→root RCE→ssh 横向 internal-host 拿 `shell`+flag），2 立足点+deploy 凭据全过证据验证(`verdict=verified`)、Observer 零告警、MITM 抓 54 条真流量入库、报告每跳 curl 可复现（task `6df1fb958887`）。遗留：**多"根目标"并行**（当前是单任务内多资产 fan-out）；成本显示 $0 是 litellm 对 glm 定价的已知 bug（实际用量 ~284K in / 10.6K out）。
 
-- **M5 · 长程 + 工程化**
-  完成定义：冷图压缩落地（控长程成本）+ 跨 run 策略记忆（向量库复用成功 kill chain）+ 分级自主/审批门（横向/破坏性 HITL）+ 多 provider + kill chain 可视化回放。
+- **M4.5 · AD 域横向（打到访问模型顶点 domain_admin）** — ✅ live 通过（2026-10-16）
+  完成定义：真 Windows AD DC 上，GLM solver 自主从 web 立足点经域凭据发现 → Kerberoast / DCSync 把访问级别推到 `domain_admin`，证据可复现、结论不误报。
+  **已落地**：靶场 `targets/ad-lab`（入口 member Flask `/ping` 命令注入 + config.ini 藏域凭据；DC = 云 x64 Windows Server 2022，`windows-dc/provision.ps1` 预埋 svc-sql[SPN+弱密码+∈Domain Admins]/backup[AS-REP]/webdev[对 DC 对象 GenericAll]）；沙箱补 impacket/netexec；知识包 `active-directory.md`；web_solver 域优先引导 + 证据纪律。
+  **live（task `497336b6a14c`）**：external→root(member 命令注入)→domain_admin（Kerberoast svc-sql → john 破 `Password1` → DCSync 抓 `labadmin:500`(RID-500) + `krbtgt` NT hash）；两条 domain_admin 立足点 + 4 凭据全 `verified`、Observer 零告警、132K in tokens 一轮直达。
+  **踩坑（血的，务必记）**：① **Samba AD DC 与 impacket 根本不兼容**——Kerberos TGS 认证器对 AES256 会话密钥报 `KRB_AP_ERR_INAPP_CKSUM`、DRSUAPI DCSync 报 `byte indices`/`ERROR_SUCCESS`，而 MIT 客户端(kinit/kvno)一切正常（证明是 impacket×Samba 的锅、非 KDC）；跨 impacket 0.12/0.13/0.14dev、Py3.12/3.14 一致复现，强制 RC4（账号 `msDS-SupportedEncryptionTypes=4` / 全局 `kerberos encryption types=legacy`）也改不动 TGT 会话密钥 enctype。→ **Samba 不可演 Kerberoast/DCSync，必须真 Windows Server**（Apple Silicon 本地跑不了 x64 Windows Server → 云）。② Azure 新林首台 DC 把建 VM 的本机管理员变成 RID-500 内置域管（叫 `labadmin`，域里**无** `Administrator`）→ 判据认 RID-500 不认字面名。③ ADCS/ESC 系列本期不做（Samba 无 CA；真演需单独 Windows + AD CS）。
+
+- **M5 · 长程 + 工程化 + 面向未知靶场的证明模型**
+  完成定义：冷图压缩落地（控长程成本）+ 跨 run 策略记忆（向量库复用成功 kill chain）+ 分级自主/审批门（横向/破坏性 HITL）+ 多 provider + kill chain 可视化回放 + **proof-of-effect verifier（验"世界"不验"报告"）**。
+
+  ### 证明模型（proof-of-effect verifier）——面向未知靶场的结论可信
+  **为什么**：M4 的 `verifier.py` 验的是「solver 自述 evidence ↔ 命令输出的字符串重叠」——声称和证据都由 LLM 挑，本质是**验"报告"不验"世界"**。后果：调 prompt 让模型把 evidence 写成 verifier 想要的样子就能变绿 = **过拟合某个模型的输出格式**，再跑一次也只证明"模型输出符合预期"，而非"攻击真发生"。要挖 HackerOne / 上未知靶场（项目定位第一性），必须把验证锚到**世界**。
+  **原则**：verdict 由系统从【已记录的真实世界底物】(`activity` 的 exec/rc/out、`http_flows`/MITM) 按**每个访问级别的"举证义务"**自行重新推导；solver 的 evidence/location 只当线索/锚点。三态收敛（借 strix 的 closure discipline）：`verified`（义务达成）/ `refuted`（世界里有明确反证，保守触发）/ `unproven`（open_proof_gap：不计入进展，但记录上报、绝不冒充成功也不偷偷丢）。证据强度阶梯：用成功的凭据 > 效果痕迹(proof-of-effect) > 高熵密文在真实输出里+凭据佐证 > location 真跑过 > 字符串重叠(最弱)。
+  **血缘**：strix `counterevidence`/`fix_verification`（闭合纪律 + "什么不算安全证明" + proof-of-effect）、ARTEX（确定性断言为准、LLM 审查仅辅助且会过度概括、防篡改）、Cairn（状态空间达成判定）；XBOW 闭源仅作概念参考（creative·deterministic）。**不是照抄**——它们没有现成的攻击 oracle，按 veritas 的"访问图 + 已记录世界底物"重新设计。
+  - **Stage 1 · 验世界（✅ 已落地 2026-10-16）**：`core/verifier.py` 重写——按级别举证义务从真实输出自推导：`domain_admin`=DCSync 真 dump 到 RID-500 内置域管/`krbtgt` 行（或一条 verified 的 NT hash 出现在真实 dump 里佐证）；`root`=`uid=0(`；`shell`=`uid=\d+(`；`location` 抽裸主机名/IP 对 rc=0 命令逐字命中（修掉旧版整串匹配对格式敏感的脆弱）；evidence 字符串重叠降为最弱兜底。加 `refuted` 态（凭据被拿去认证且输出明确失败→refuted，保守）。`solver._apply` 先判凭据、收集 verified 高熵密文供立足点佐证。`observer`/`report` 跟上三态。**真数据回归**：用上一条 AD live（`ee5da75bda5d`）的真实记录跑新 verifier，`domain_admin`/`root`/`shell` 从 unverified→verified（来自真实 DCSync 的 `labadmin:500:…` 与 `uid=0` 输出，**非 LLM 措辞**），两条不可溯源的凭据正确留 `unproven`。
+  - **Stage 2 · 主动证明/反证**：engine 为高价值声称（shell/DA）注入**自选 nonce 回环**（目标回显只有真执行才产生）与**重认证**探针，并**按主机限定** proof-of-effect（现 Stage 1 未按主机严格限定）；证伪中→`refuted`。
+  - **Stage 3 · 未知靶场证明模型**：按漏洞/访问类建"举证义务注册表"；写不出确定性义务的新效果，要 solver 交**可复现 PoC（MITM 请求+响应）**，再上 **LLM-judge 仅作辅助评级**（标"llm-judged"低信任档，Observer 交叉核）。**确定性永远是脊梁**——否则就是"谁验证验证器"。
 
 ---
 

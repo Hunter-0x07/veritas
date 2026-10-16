@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS footholds (
   label        TEXT NOT NULL,              -- 人读标签，如 shell@10.0.0.5
   access_level TEXT NOT NULL,              -- external/recon/web_user/web_admin/db_read/shell/root/domain_admin
   location     TEXT,                       -- 立足点所在：URL/主机/服务
-  verdict      TEXT NOT NULL DEFAULT 'verified', -- 证据判定：verified/unverified（防幻觉，只 verified 计入进展）
+  verdict      TEXT NOT NULL DEFAULT 'verified', -- 证据判定：verified/unproven/refuted（防幻觉，只 verified 计入进展）
   props        JSONB DEFAULT '{}',
   created_at   TIMESTAMPTZ DEFAULT now(),
   UNIQUE (task_id, label)
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS credentials (
   username   TEXT,
   secret     TEXT,
   source     TEXT,
-  verdict    TEXT NOT NULL DEFAULT 'verified', -- 证据判定：verified/unverified
+  verdict    TEXT NOT NULL DEFAULT 'verified', -- 证据判定：verified/unproven/refuted
   props      JSONB DEFAULT '{}',
   created_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE (task_id, kind, username, secret)

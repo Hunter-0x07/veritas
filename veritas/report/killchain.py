@@ -42,7 +42,7 @@ def _render_tree(by_id, children, roots) -> list[str]:
         f = by_id[fid]
         indent = "  " * depth
         arrow = "└─ " if depth else ""
-        badge = "" if f["verdict"] == "verified" else " ⚠️未验证"
+        badge = {"verified": "", "refuted": " ❌反证", }.get(f["verdict"], " ⚠️未证实")
         lines.append(f"{indent}{arrow}`{f['access_level']}` · {f['label']}"
                      + (f"  ({f['location']})" if f["location"] else "") + badge)
         for ch in sorted(children[fid], key=lambda i: rank(by_id[i]["access_level"])):
@@ -86,7 +86,8 @@ async def generate(board, task_id: str, target: str, goal: str,
     lines += ["", "## 每一跳 · 立足点与 PoC", ""]
     for f in sorted(footholds, key=lambda x: rank(x["access_level"])):
         ev = (f["props"] or {}).get("evidence", "")
-        badge = "✅ verified" if f["verdict"] == "verified" else "⚠️ unverified（不计入进展）"
+        badge = {"verified": "✅ verified", "refuted": "❌ refuted（有反证·不计入进展）"}.get(
+            f["verdict"], "⚠️ unproven（未证实·不计入进展）")
         lines.append(f"### `{f['access_level']}` — {f['label']}  · {badge}")
         if f["location"]:
             lines.append(f"- 位置: `{f['location']}`")
@@ -96,7 +97,7 @@ async def generate(board, task_id: str, target: str, goal: str,
 
     lines += ["## 战利品 · 凭据", ""]
     lines += [f"- [{c['kind']}] `{c['username']}:{c['secret']}` ← {c['source']}"
-              + ("" if c["verdict"] == "verified" else " ⚠️未验证") for c in creds] or ["- （无）"]
+              + {"verified": "", "refuted": " ❌反证"}.get(c["verdict"], " ⚠️未证实") for c in creds] or ["- （无）"]
     lines += ["", "## 战利品 · 数据", ""]
     lines += [f"- [{lo['kind']}] {lo['summary']}" for lo in loots] or ["- （无）"]
     lines += ["", "## 漏洞（可走的边）", ""]
@@ -148,8 +149,10 @@ async def generate(board, task_id: str, target: str, goal: str,
     lines.append("- 总体: " + ("✅ 结论可信（目标达成，立足点均过证据验证，无监督告警）"
                                if trustworthy else "⚠️ 存在存疑项，见下"))
     verified_n = sum(1 for f in footholds if f["verdict"] == "verified")
-    lines.append(f"- 证据验证: {verified_n} 个立足点 verified · {len(unver)} 个 unverified"
-                 f"（unverified 不计入进展，{'最终' if not reached else ''}verified 访问 `{max_acc}`）")
+    refuted_n = sum(1 for f in footholds if f["verdict"] == "refuted")
+    unproven_n = len(unver) - refuted_n
+    lines.append(f"- 证据验证: {verified_n} verified · {unproven_n} unproven · {refuted_n} refuted"
+                 f"（只 verified 计入进展，{'最终' if not reached else ''}verified 访问 `{max_acc}`）")
     if obs:
         lines.append("- 监督 / 验证发现:")
         for a in obs:

@@ -1,0 +1,48 @@
+# Veritas AD 靶场 (ad-lab)：Samba AD DC + 弱点成员机入口
+#
+# 攻击链（供 solver 自主走通，全部 Samba AD DC 兼容）：
+#   入口   : member 命令注入 → shell@member + 读到域凭据(webdev)
+#   主链   : svc-sql 配 SPN + 弱密码 + ∈ Domain Admins → Kerberoast → crack → secretsdump(DCSync) → domain_admin
+#   备线   : backup 设 DONT_REQUIRE_PREAUTH + 弱密码      → AS-REP roasting → crack
+#   硬路   : webdev 对 DC 对象 GenericAll                 → addcomputer → RBCD → S4U 冒充 DA → secretsdump DC
+#
+# 边界：Samba AD DC 非真 Windows，不含 AD CS，ADCS/ESC 系列无法演绎（见 README「能力边界」）。
+name: ad-lab
+
+networks:
+  ad-lab:
+    name: ad-lab_net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  dc:
+    build: ./dc
+    container_name: lab-dc
+    hostname: lab-dc
+    privileged: true          # Samba AD DC provision/运行需要文件系统 xattr 与权限
+    dns:
+      - 127.0.0.1             # DC 用自己内置 DNS
+    networks:
+      ad-lab:
+        ipv4_address: 172.30.0.10
+        aliases:
+          - lab-dc.veritas.lab
+
+  member:
+    build:
+      context: ./member
+      args:
+        # 本地 Samba DC 默认 172.30.0.10；云上真 Windows DC：DC_IP=<云DC公网IP> docker compose up -d --build member
+        DC_IP: ${DC_IP:-172.30.0.10}
+    container_name: lab-member
+    hostname: lab-member
+    # 云端模式：DC 在云上、本地只留 member，用 `docker compose up -d --no-deps member` 别拉本地 dc
+    depends_on: [dc]
+    dns:
+      - 172.30.0.10           # 成员机走 DC 的 DNS，能解析 veritas.lab / lab-dc.veritas.lab
+    networks:
+      ad-lab:
+        ipv4_address: 172.30.0.20

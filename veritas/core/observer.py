@@ -40,10 +40,12 @@ class Observer:
         bad = [f for f in footholds
                if f["verdict"] != "verified" and meets_goal(f["access_level"], self.goal)]
         if bad:
-            labels = ", ".join(f["label"] for f in bad)
+            labels = ", ".join(f"{f['label']}({f['verdict']})" for f in bad)
+            refuted = any(f["verdict"] == "refuted" for f in bad)
             await self._flag(task_id, "false_positive",
                              f"有 solver 声称达到 goal(`{self.goal}`) 但未过证据验证："
-                             f"{labels} —— 已判未达成（防误报）")
+                             f"{labels} —— 已判未达成（"
+                             f"{'含明确反证' if refuted else '世界里无对应举证'}·防误报）")
         if decision == "exhausted":
             untested = await self.board.assets(task_id, untested_only=True)
             if untested:

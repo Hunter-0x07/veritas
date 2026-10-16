@@ -20,7 +20,9 @@
 - **M2** 利用链 — GLM 单 solver 自发完成（未单独实现）✅
 - **M3** 内网横向(靶场 `targets/lateral-lab`) ✅ — GLM 自主发现命令注入→**自封装 pivot helper `c()`**→读凭据→ssh 横向→`shell@internal` + flag。kill chain: external→shell→root
 - **M4** 规模化+结论可信 ✅ **三刀落地 + live 整链通过** — ① 舰队真并行(Coordinator 按资产分解 fan-out + CAS + 每 solver 独享按需沙箱 + 难点重试封顶) + trace 协作(`search_worker_traces`)；② 证据确定性验证层(`verifier` 判 verdict，`max_access` 只认 verified·防幻觉) + Observer 监督(`observer` 失速/鬼打墙/早停·误报)；③ 全链路 MITM 留痕(`runtime/mitm` 沙箱内 mitmdump+CA 注入→`http_flows`，报告每跳 curl 可复现) + `repeat_request`。kill-chain 树按访问级别串 pivot 父子链(还原 edge→internal)。**live 实证**(task `6df1fb958887`)：GLM 单 solver 打穿 lateral-lab→拿内网 shell+flag，立足点/凭据全 verified、Observer 零告警、MITM 54 条真流量入库可 curl 复现。
-- **下一步候选**：多"根目标"并行(当前单任务内多资产 fan-out) · 真 SOCKS pivot · AD 域靶场 · M5(冷图压缩/跨 run 策略记忆/审批门) · build-in-public 素材(M4 live 报告现成)
+- **AD 域横向**(靶场 `targets/ad-lab`，云 x64 Windows Server DC) ✅ — GLM 单 solver 自主打到访问模型顶点 **domain_admin**：member `/ping` 命令注入→root→读 config.ini 拿域凭据 webdev→Kerberoast svc-sql→john 破 `Password1`→DCSync 抓 RID-500(`labadmin`)+`krbtgt` NT hash。两条 domain_admin 立足点+全部凭据 verified、Observer 零告警(live task `497336b6a14c`)。**踩坑**：Samba AD DC 与 impacket 的 Kerberos(AES256 会话密钥报 `INAPP_CKSUM`)+DRSUAPI DCSync 根本不兼容(MIT 客户端却正常)，换**真 Windows Server** 才通(Azure 云 DC)；Azure 新林首台 DC 的 RID-500 内置域管叫 `labadmin` 非 `Administrator`。
+- **verifier 升级：验"世界"不验"报告"(Stage 1)** ✅ — verdict 由系统从真实输出按每级**举证义务**自推导(domain_admin=DCSync RID-500/krbtgt 行，且不接受"够到 DC"这种弱证据；root=`uid=0`；location 抽裸主机/IP 对 rc=0 命令)，三态 `verified`/`refuted`/`unproven`。修掉旧版"匹配 solver 自述 evidence 串"易过拟合模型措辞的问题(调 prompt 就能变绿≠攻击真发生)。设计/Stage2-3 见 PLAN.md M5。
+- **下一步候选**：verifier Stage 2/3(主动 nonce 探针 + 举证义务注册表 + LLM-judge 辅助·面向未知靶场) · 多"根目标"并行 · 真 SOCKS pivot · M5(冷图压缩/跨 run 策略记忆/审批门) · build-in-public 素材(M3/M4/AD live 报告现成)
 
 ## 代码结构
 ```

@@ -53,8 +53,12 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
         llm = LLMClient(cfg.llm)
         sandboxes = [Sandbox(f"veritas-{task_id[:8]}-s{i}", network=cfg.runtime.sandbox_network)
                      for i in range(nworkers)]
-        solvers = [Solver(f"s{i}", board, build_registry("live", llm, sandboxes[i]), verifier)
+        # safe-probe 策略（Stage 2 主动探针）：executor 持沙箱在 verifier 判定前主动证成/证伪。
+        solvers = [Solver(f"s{i}", board,
+                          build_registry("live", llm, sandboxes[i], probe_policy=cfg.probe), verifier)
                    for i in range(nworkers)]
+        log.info("safe-probe 策略：authorization=%s · budget=%d · llm_judge=%s（external 仅放低噪声 nonce 回环）",
+                 cfg.probe.authorization, cfg.probe.budget, cfg.probe.llm_judge)
     else:
         solvers = [Solver(f"s{i}", board, build_registry("mock"), verifier)
                    for i in range(nworkers)]

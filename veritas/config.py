@@ -33,6 +33,19 @@ class RuntimeCfg:
 
 
 @dataclass
+class ProbeCfg:
+    """verifier Stage 2 主动探针的 safe-probe 策略（见 core/prober.py）。
+
+    第一性：真实目标是 HackerOne 这类【授权外部目标】，不能随便重活。默认 external（保守）——
+    只放单次 nonce 回环这类低噪声探针；授权靶场显式声明 authorization=lab 才开重探针
+    （重认证 / 重跑 DCSync）。"""
+    enabled: bool = True
+    authorization: str = "external"   # "lab"=授权靶场(各级可) | "external"=外部(仅低噪声)
+    budget: int = 8                   # 本次 run 的主动探针执行预算（防对目标连续重活）
+    llm_judge: bool = False           # 外部降级路径是否启用 LLM-judge 辅助评级（低信任档）
+
+
+@dataclass
 class Config:
     dsn: str
     target: str
@@ -40,6 +53,7 @@ class Config:
     llm: LLMCfg
     runtime: RuntimeCfg
     scope: ScopeCfg
+    probe: ProbeCfg
 
     @staticmethod
     def load(path: str) -> "Config":
@@ -58,4 +72,6 @@ class Config:
             runtime=RuntimeCfg(**{k: v for k, v in raw.get("runtime", {}).items()
                                   if k in RuntimeCfg.__annotations__}),
             scope=ScopeCfg(**{k: v for k, v in raw.get("scope", {}).items() if k in {"domains", "cidrs"}}),
+            probe=ProbeCfg(**{k: v for k, v in raw.get("probe", {}).items()
+                              if k in ProbeCfg.__annotations__}),
         )

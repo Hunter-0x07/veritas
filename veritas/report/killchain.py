@@ -85,12 +85,24 @@ async def generate(board, task_id: str, target: str, goal: str,
     # 每跳 PoC：立足点的支撑证据
     lines += ["", "## 每一跳 · 立足点与 PoC", ""]
     for f in sorted(footholds, key=lambda x: rank(x["access_level"])):
-        ev = (f["props"] or {}).get("evidence", "")
+        props = f["props"] or {}
+        ev = props.get("evidence", "")
         badge = {"verified": "✅ verified", "refuted": "❌ refuted（有反证·不计入进展）"}.get(
             f["verdict"], "⚠️ unproven（未证实·不计入进展）")
         lines.append(f"### `{f['access_level']}` — {f['label']}  · {badge}")
         if f["location"]:
             lines.append(f"- 位置: `{f['location']}`")
+        probe = props.get("probe")
+        if probe:
+            how = {"deterministic": "确定性", "llm-judged": "LLM辅助·低信任", "none": "被动兜底"}.get(
+                probe.get("trust", ""), probe.get("trust", ""))
+            lines.append(f"- 主动探针（Stage 2）: `{probe.get('method')}`/{probe.get('tier')} → "
+                         f"**{probe.get('verdict')}**（{how}）— {probe.get('detail', '')}")
+            if probe.get("command"):
+                lines.append(f"  - 探针命令（可复现）: `{probe['command'][:200]}`")
+        judge = props.get("probe_judge")
+        if judge:
+            lines.append(f"- LLM-judge（低信任辅助，不驱动 verdict）: {judge.get('detail', '')}")
         if ev:
             lines.append(f"- 证据/PoC:\n\n  ```\n  {ev.strip()[:800]}\n  ```")
         lines.append("")

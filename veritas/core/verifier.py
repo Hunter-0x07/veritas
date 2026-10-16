@@ -14,8 +14,11 @@
   用成功的凭据 > 系统可识别的"效果痕迹"(proof-of-effect) > 高熵密文在真实输出里+凭据佐证 > location 真跑过 > 字符串重叠(最弱)。
 
 边界 / 后续（见 PLAN.md M5「面向未知靶场的证明模型」）：
-  - Stage 1（本文件）：被动——只从已记录的真实输出/命令里按义务推导；proof-of-effect 暂未按主机严格限定。
-  - Stage 2：engine 主动探针（自选 nonce 回环 / 重认证）给 shell/DA 做"效果证明"与"主动反证"，按主机限定。
+  - Stage 1：被动——只从已记录的真实输出/命令里按义务推导；proof-of-effect 不按主机严格限定。
+  - Stage 2（✅ 已接入）：持沙箱的 `core/prober.py` 主动探针（引擎自选 nonce 回环 / 重认证 /
+    重跑 DCSync，按主机限定）在本层【判定前】给出 proven/refuted/inconclusive；本层接收它当
+    【数据】——**主动结论优先于被动推导**：proven→verified、refuted→refuted、inconclusive→回落
+    Stage 1 被动。verifier 自身仍是纯函数、不持沙箱（职责干净可测）。
   - Stage 3：举证义务注册表（按漏洞/访问类）+ LLM-judge 仅作辅助评级（低信任档，Observer 交叉核）；确定性永远是脊梁。
 mock 是模拟地真值 → 一律 verified；external/recon 是侦察地真值 → 恒 verified。
 """
@@ -78,6 +81,23 @@ class Verifier:
     def __init__(self, mode: str = "mock"):
         self.mode = mode
 
+    # ---- Stage 2：主动探针结论优先（持沙箱的 prober 产出，本层只当数据用）----
+    @staticmethod
+    def _from_probe(probe) -> str | None:
+        """把 prober 的 ProbeResult(dict) 翻成 verdict。只认确定性的 proven/refuted；
+        inconclusive 或 llm-judged（低信任辅助）→ 返回 None，回落 Stage 1 被动推导。"""
+        if not probe:
+            return None
+        verdict = probe.get("verdict")
+        trust = probe.get("trust", "deterministic")
+        if trust != "deterministic":          # llm-judged / none 不驱动 verdict（确定性才是脊梁）
+            return None
+        if verdict == "proven":
+            return VERIFIED
+        if verdict == "refuted":
+            return REFUTED
+        return None                            # inconclusive → 回落被动
+
     # ---- 世界底物 ----
     def _outputs(self, traces: list[dict]) -> str:
         """所有真实命令产出拼成的干草堆（效果痕迹从这里找；真实痕迹与 rc 无关）。"""
@@ -107,11 +127,14 @@ class Verifier:
         return False
 
     def foothold(self, access_level: str, location: str, evidence: str,
-                 traces: list[dict], verified_secrets=()) -> str:
+                 traces: list[dict], verified_secrets=(), probe=None) -> str:
         if self.mode != "live":
             return VERIFIED
         if rank(access_level) <= rank("recon"):       # 侦察地真值
             return VERIFIED
+        pv = self._from_probe(probe)                   # Stage 2：主动证成/证伪优先
+        if pv is not None:
+            return pv
         out = self._outputs(traces)
         cmd = self._ok_commands(traces)
         # 1) 世界里有满足该级别举证义务的效果痕迹
@@ -129,9 +152,12 @@ class Verifier:
             return VERIFIED
         return UNPROVEN                                # 被动阶段：没证成即 unproven；主动反证留 Stage 2
 
-    def credential(self, secret: str, username: str, traces: list[dict]) -> str:
+    def credential(self, secret: str, username: str, traces: list[dict], probe=None) -> str:
         if self.mode != "live":
             return VERIFIED
+        pv = self._from_probe(probe)                   # Stage 2：引擎亲自重认证的结论优先
+        if pv is not None:
+            return pv
         out = self._outputs(traces)
         cmd = self._ok_commands(traces)
         hay = out + "\n" + cmd

@@ -59,8 +59,10 @@ class Solver:
         """把跃迁落进攻击图，并连 kill-chain 血缘边。证据确定性验证层在此裁决 verdict。"""
         src = opp["from_foothold"]
         traces = await self.board.exec_traces(task_id)  # 真实 sandbox 记录 = 验证的"世界底物"
-        # 先判凭据，收集已 verified 的密文供立足点佐证（如 DCSync 的 NT hash 佐证 domain_admin）
-        cred_verdicts = [self.verifier.credential(cr.get("secret", ""), cr.get("username", ""), traces)
+        # 先判凭据，收集已 verified 的密文供立足点佐证（如 DCSync 的 NT hash 佐证 domain_admin）。
+        # probe = 执行器在本层判定前跑的主动探针结论（Stage 2），从 props 里取，优先于被动推导。
+        cred_verdicts = [self.verifier.credential(cr.get("secret", ""), cr.get("username", ""), traces,
+                                                  probe=(cr.get("props") or {}).get("probe"))
                          for cr in tr.credentials]
         verified_secrets = [cr.get("secret", "") for cr, v in zip(tr.credentials, cred_verdicts)
                             if v == "verified" and cr.get("secret")]
@@ -69,10 +71,12 @@ class Solver:
         prev = src
         ordered = sorted(enumerate(tr.footholds), key=lambda t: (rank(t[1]["access_level"]), t[0]))
         for _, f in ordered:
-            ev = (f.get("props") or {}).get("evidence", "")
-            # verdict 由 verifier 从"世界"按级别举证义务自推导；evidence/location 只当线索
+            props = f.get("props") or {}
+            ev = props.get("evidence", "")
+            # verdict 由 verifier 裁决：Stage 2 主动探针结论（props.probe）优先，否则从"世界"按
+            # 级别举证义务被动推导；evidence/location 只当线索。
             verdict = self.verifier.foothold(f["access_level"], f.get("location") or "", ev,
-                                             traces, verified_secrets)
+                                             traces, verified_secrets, probe=props.get("probe"))
             if verdict != "verified":
                 log.warning("solver %s · 立足点 %s(%s) → %s（不计入进展）",
                             self.wid, f["label"], f["access_level"], verdict)
@@ -88,7 +92,7 @@ class Solver:
         for cr, verdict in zip(tr.credentials, cred_verdicts):
             await self.board.add_credential(task_id, cr["kind"], username=cr.get("username", ""),
                                              secret=cr.get("secret", ""), source=cr.get("source", ""),
-                                             verdict=verdict)
+                                             props=cr.get("props"), verdict=verdict)
         for lo in tr.loot:
             await self.board.add_loot(task_id, lo["kind"], lo["summary"], lo.get("props"))
         for a in tr.assets:

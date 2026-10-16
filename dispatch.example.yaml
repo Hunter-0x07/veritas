@@ -18,6 +18,18 @@ runtime:
   workers: 2
   max_rounds: 30
 
+# verifier Stage 2 主动探针的 safe-probe 策略（见 veritas/core/prober.py）。
+# 主动探针在 verifier 判定前，用立足点自己的访问向量发起"只有真拿下才能通过"的挑战
+# （随机 nonce 回环 / 重认证 / 重跑 DCSync），拿确定性的证成或证伪。
+probe:
+  enabled: true
+  # authorization: external=外部授权目标(HackerOne 式，默认·保守)——只放【低噪声】探针(单次 nonce 回环)，
+  #   重认证/重 DCSync 等高噪声声称降级为被动 proof-of-effect + 可复现 PoC(+可选 LLM-judge)；
+  #   lab=授权靶场(试验台)——各级主动探针都开(重认证、重跑 DCSync 坐实)。
+  authorization: "external"
+  budget: 8          # 本次 run 的主动探针执行预算（防对目标连续重活/限速/告警）
+  llm_judge: false   # 外部降级路径是否启用 LLM-judge 辅助评级（低信任档，绝不单独抬成 verified）
+
 # 授权边界（含内网网段，横向目标也须在 scope）
 scope:
   domains: ["localhost", "127.0.0.1"]

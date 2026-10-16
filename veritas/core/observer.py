@@ -57,6 +57,8 @@ class Observer:
         counts: dict[tuple, int] = {}
         for r in await self.board.activity_log(task_id):
             c = r["content"] or {}
+            if "probe" in c:          # 主动探针（含反证，rc=1 正常）不是鬼打墙，跳过
+                continue
             if "exec" in c and c.get("rc") not in (0, None):
                 key = (r["worker_id"], c["exec"])
                 counts[key] = counts.get(key, 0) + 1

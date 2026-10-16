@@ -10,6 +10,7 @@ import logging
 import shlex
 
 from .. import knowledge
+from ..core.prober import PROVEN, Prober, ProbePolicy
 from ..llm import LLMClient
 from ..runtime import MitmRecorder, Sandbox
 from .base import ExecResult, Executor, Transition
@@ -51,7 +52,12 @@ SYSTEM = (
     "**破出任一 Domain Admins 成员(如 svc-sql)的口令/hash 就已经是 domain_admin → 立刻 report_foothold(access_level=\"domain_admin\")，别等 DCSync。**"
     "再可选 DCSync 抓全域 hash 作战果：`impacket-secretsdump -dc-ip <DC> 'veritas.lab/<daUser>:<pwd>'@<DC> -just-dc`"
     "（输出里 RID 结尾 500 的内置域管——名字随部署而变，Azure 上常叫 labadmin，不一定叫 Administrator——或 krbtgt/任一 DA 成员的 NT hash 都算到顶；别死盯字面 Administrator）。"
-    "所有 impacket/nxc 加 -dc-ip 直指 DC 绕 DNS。"
+    "所有 impacket/nxc 加 -dc-ip 直指 DC 绕 DNS。\n"
+    "8) **report_foothold 带上 `replay`（强烈建议）**：引擎会据此【主动探针】复现你的立足点来坐实"
+    "（比从日志反推可靠，没它只能退回被动验证）。shell/root → `replay.command_template`：一条能把 {CMD} 占位符"
+    "送进【该主机】shell 的命令（web 命令注入用 `curl -s -G '<url>' --data-urlencode '<param>=<前缀>; {CMD}'`，"
+    "引擎会把 {CMD} 换成随机 nonce 回环命令验证真能执行）；domain_admin → `replay.verify_command`：一条可直接重跑、"
+    "输出里会出现 RID-500/krbtgt 行的 DCSync 命令。"
 )
 
 
@@ -75,7 +81,17 @@ def _schemas() -> list[dict]:
         fn("report_foothold", "登记拿到的立足点（更高访问级别）",
            {"access_level": {"type": "string", "enum": list(_ACCESS)},
             "label": {"type": "string"}, "location": {"type": "string"},
-            "evidence": {"type": "string", "description": "支撑证据（真实响应片段）"}},
+            "evidence": {"type": "string", "description": "支撑证据（真实响应片段）"},
+            "replay": {"type": "object",
+                "description": "可重放 PoC / 访问配方：引擎会据此【主动探针】复现该立足点来坐实（优于从日志反推）。"
+                    "shell/root 用 `command_template`——一条能在沙箱里执行、把 {CMD} 占位符送进【该主机】shell 的命令，"
+                    "引擎会把 {CMD} 替换成随机 nonce 回环探命令（web 命令注入建议用 "
+                    "`curl -s -G '<url>' --data-urlencode '<param>=<前缀>; {CMD}'` 形式，确保 {CMD} 经注入落进目标 shell）；"
+                    "domain_admin 用 `verify_command`——一条可直接重跑、输出里会出现 RID-500/krbtgt 行的 DCSync 命令。",
+                "properties": {
+                    "command_template": {"type": "string", "description": "含 {CMD} 占位符的任意命令执行配方（shell/root）"},
+                    "verify_command": {"type": "string", "description": "可直接重跑坐实的命令（domain_admin 的 DCSync）"},
+                    "domain": {"type": "string"}, "target": {"type": "string"}}}},
            ["access_level", "label", "evidence"]),
         fn("report_credential", "登记拿到的凭据",
            {"kind": {"type": "string", "enum": ["password", "hash", "token", "key"]},
@@ -93,10 +109,11 @@ def _schemas() -> list[dict]:
 class WebSolverExecutor(Executor):
     kinds = ("initial_access", "web_exploit")
 
-    def __init__(self, llm: LLMClient, sandbox: Sandbox, scope=None):
+    def __init__(self, llm: LLMClient, sandbox: Sandbox, scope=None, probe_policy=None):
         self.llm = llm
         self.sandbox = sandbox
         self.scope = scope
+        self.probe_policy = probe_policy or ProbePolicy()  # safe-probe 策略（Stage 2 主动探针）
         self.mitm = MitmRecorder(sandbox)  # 本 solver 沙箱的全链路 HTTP 留痕
 
     async def execute(self, opp, board, task_id: str) -> ExecResult:
@@ -140,12 +157,68 @@ class WebSolverExecutor(Executor):
                 if finished:
                     break
 
+            # Stage 2：verifier 判定前，引擎主动探针证成/证伪（本执行器持沙箱，职责见 core/prober.py）
+            await self._active_probe(tr, board, task_id, wid)
+
             success = bool(tr.footholds)
             summary = (f"拿到 {len(tr.footholds)} 立足点 / {len(tr.credentials)} 凭据 / {len(tr.loot)} 战利品"
                        if success else "未拿到新立足点")
             return ExecResult(success, summary, tr)
         finally:
             await self.mitm.collect(board, task_id, wid)  # 收尾把全链路 HTTP 流入库（异常也留痕）
+
+    async def _active_probe(self, tr: Transition, board, task_id: str, wid: str) -> None:
+        """主动探针编排：先探凭据（收集引擎亲自证成的 DA 凭据），再探立足点（nonce 回环 / 重 DCSync）。
+        结果写进各自 props['probe']（供 solver 传给 verifier），探针命令也落 activity（可复现 + 世界底物）。"""
+        if not self.probe_policy.enabled:
+            return
+        prober = Prober(self.sandbox, self.probe_policy, llm=self.llm)
+        traces = await board.exec_traces(task_id)
+        proven_creds: list[dict] = []
+        for cr in tr.credentials:
+            try:
+                pr = await prober.probe_credential(cr, traces)
+            except Exception as e:  # noqa: BLE001
+                log.warning("凭据探针异常: %s", e); continue
+            if pr is None:
+                continue
+            cr["props"] = {**(cr.get("props") or {}), "probe": pr.as_dict()}
+            await self._log_probe(board, task_id, wid, f"cred:{cr.get('username','')}", pr)
+            if pr.verdict == PROVEN:
+                proven_creds.append(cr)
+        for f in tr.footholds:
+            try:
+                pr = await prober.probe_foothold(f, proven_creds, traces)
+            except Exception as e:  # noqa: BLE001
+                log.warning("立足点探针异常: %s", e); continue
+            if pr is None:
+                continue
+            f.setdefault("props", {})["probe"] = pr.as_dict()
+            await self._log_probe(board, task_id, wid, f"foothold:{f.get('label','')}", pr)
+            # 外部降级路径（medium/high 被策略挡回）：可选 LLM-judge 辅助评级（低信任档，不驱动 verdict）
+            if pr.method == "downgraded" and self.probe_policy.llm_judge:
+                poc = self._poc_for(f)
+                judge = await prober.llm_judge(f"{f.get('access_level')} @ {f.get('location')}", poc)
+                if judge is not None:
+                    f["props"]["probe_judge"] = judge.as_dict()
+                    await self._log_probe(board, task_id, wid, f"judge:{f.get('label','')}", judge)
+
+    async def _log_probe(self, board, task_id: str, wid: str, subject: str, pr) -> None:
+        """把探针命令/结果落 activity：既是可复现证据（报告「复现命令」会收），也成世界底物。"""
+        await board.write_activity(task_id, None, wid, 0, {
+            "exec": (pr.command or f"(probe:{pr.method})")[:300],
+            "rc": 0 if pr.verdict == PROVEN else 1,
+            "out": (pr.output or pr.detail or "")[:400],
+            "probe": pr.method, "verdict": pr.verdict, "tier": pr.tier,
+            "trust": pr.trust, "subject": subject})
+
+    @staticmethod
+    def _poc_for(foothold: dict) -> str:
+        """给 LLM-judge 的可复现 PoC：replay 配方 + 立足点证据（外部降级路径的辅助材料）。"""
+        props = foothold.get("props") or {}
+        replay = props.get("replay") or {}
+        return (f"replay={replay}\nlocation={foothold.get('location')}\n"
+                f"evidence={props.get('evidence','')[:1500]}")
 
     async def _handle(self, name, args, tr: Transition, task_id, board, wid="ws") -> tuple[str, bool]:
         if name == "sandbox_exec":
@@ -188,10 +261,14 @@ class WebSolverExecutor(Executor):
             body = knowledge.load(args.get("name", ""))
             return (body or "无此知识包"), True
         if name == "report_foothold":
+            props = {"evidence": args.get("evidence", "")}
+            replay = args.get("replay")
+            if isinstance(replay, dict) and replay:   # 可重放 PoC 配方 → 供 Stage 2 主动探针复现
+                props["replay"] = replay
             tr.footholds.append({"label": args.get("label", "foothold"),
                                  "access_level": args.get("access_level", "web_user"),
                                  "location": args.get("location", ""),
-                                 "props": {"evidence": args.get("evidence", "")}})
+                                 "props": props})
             return "已登记立足点", True
         if name == "report_credential":
             tr.credentials.append({"kind": args.get("kind", "password"), "username": args.get("username", ""),

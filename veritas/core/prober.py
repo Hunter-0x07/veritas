@@ -57,9 +57,17 @@ _SHELL_ID = re.compile(r"uid=\d+\(")
 _DUMP_RID500 = re.compile(r"(?mi)^[^\s:]+:500:[0-9a-f]{32}:[0-9a-f]{32}:::")   # DCSync RID-500 内置域管
 _DUMP_KRBTGT = re.compile(r"(?mi)^krbtgt:\d+:[0-9a-f]{32}:[0-9a-f]{32}:::")    # krbtgt 域信任根
 _AUTH_OK = re.compile(r"(?i)\(Pwn3d!\)|\[\+\]")                               # nxc/netexec 认证成功
-_AUTH_FAIL = re.compile(
-    r"(?i)\[-\]|STATUS_LOGON_FAILURE|LOGON_FAILURE|KDC_ERR_PREAUTH_FAILED|"
-    r"authentication failed|access[_ ]denied|login failed")
+# 真·认证/访问被拒（可据此 refuted——世界给了明确反证）
+_AUTH_DENIED = re.compile(
+    r"(?i)STATUS_LOGON_FAILURE|LOGON_FAILURE|KDC_ERR_PREAUTH_FAILED|STATUS_ACCESS_DENIED|"
+    r"ERROR_DS_DRA_ACCESS_DENIED|access[_ ]denied|authentication failed|login failed")
+# 基础设施/操作性错误（DC 不健康、网络、服务没应答）——**不是反证**，判 inconclusive
+# （保守：宁可 unproven 不乱 refute。如 impacket 的 `[-] RemoteOperations failed: No answer!`
+#  只说明 DC 没应答，不说明声称是假的——若据此 refute 会把"DC 临时宕机"误判成"攻击没发生"）。
+_OPERATIONAL = re.compile(
+    r"(?i)no answer|timed?\s?out|connection (?:refused|reset|error)|could\s?n.?t connect|"
+    r"can.?t contact|unreachable|RemoteOperations failed|network error|no route to host|"
+    r"name or service not known")
 _HOST_TOK = re.compile(r"\b(?:\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9][a-z0-9.-]*\.[a-z0-9.-]+)\b", re.I)
 
 
@@ -197,9 +205,13 @@ class Prober:
             res = ProbeResult(PROVEN, "re_dcsync", tier,
                               detail="重跑 DCSync 真实 dump 到 RID-500 内置域管 / krbtgt 行 → domain_admin 坐实",
                               command=cmd, output=out)
-        elif _AUTH_FAIL.search(out):
+        elif _OPERATIONAL.search(out) and not _AUTH_DENIED.search(out):
+            res = ProbeResult(INCONCLUSIVE, "re_dcsync", tier,     # DC 没应答/网络问题，非反证（保守）
+                              detail="重跑 DCSync 遇基础设施错误(DC 未应答/网络)，非认证反证 → 交被动兜底",
+                              command=cmd, output=out)
+        elif _AUTH_DENIED.search(out):
             res = ProbeResult(REFUTED, "re_dcsync", tier,
-                              detail="重跑 DCSync 认证/复制明确失败 → domain_admin 声称反证",
+                              detail="重跑 DCSync 认证/复制被明确拒绝 → domain_admin 声称反证",
                               command=cmd, output=out)
         else:
             res = ProbeResult(INCONCLUSIVE, "re_dcsync", tier,
@@ -245,9 +257,13 @@ class Prober:
             res = ProbeResult(PROVEN, "reauth", tier,
                               detail=f"引擎重认证 {user}@{target} → [+] 成功（凭据真可用）",
                               command=cmd, output=out)
-        elif _AUTH_FAIL.search(out):
+        elif _OPERATIONAL.search(out) and not _AUTH_DENIED.search(out):
+            res = ProbeResult(INCONCLUSIVE, "reauth", tier,       # 连不上/没应答，非凭据反证（保守）
+                              detail=f"重认证 {user}@{target} 遇基础设施错误(未应答/网络)，非凭据反证 → 交被动兜底",
+                              command=cmd, output=out)
+        elif _AUTH_DENIED.search(out):
             res = ProbeResult(REFUTED, "reauth", tier,
-                              detail=f"引擎重认证 {user}@{target} → 认证失败（凭据反证）",
+                              detail=f"引擎重认证 {user}@{target} → 认证被明确拒绝（凭据反证）",
                               command=cmd, output=out)
         else:
             res = ProbeResult(INCONCLUSIVE, "reauth", tier,

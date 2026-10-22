@@ -10,6 +10,7 @@ import logging
 import shlex
 
 from .. import knowledge
+from ..core import obligations
 from ..core.prober import PROVEN, Prober, ProbePolicy
 from ..llm import LLMClient
 from ..runtime import MitmRecorder, Sandbox
@@ -189,20 +190,26 @@ class WebSolverExecutor(Executor):
             if pr.verdict == PROVEN:
                 proven_creds.append(cr)
         for f in tr.footholds:
+            access = f.get("access_level", "")
+            pr = None
             try:
                 pr = await prober.probe_foothold(f, proven_creds, traces)
             except Exception as e:  # noqa: BLE001
-                log.warning("立足点探针异常: %s", e); continue
-            if pr is None:
-                continue
-            f.setdefault("props", {})["probe"] = pr.as_dict()
-            await self._log_probe(board, task_id, wid, f"foothold:{f.get('label','')}", pr)
-            # 外部降级路径（medium/high 被策略挡回）：可选 LLM-judge 辅助评级（低信任档，不驱动 verdict）
-            if pr.method == "downgraded" and self.probe_policy.llm_judge:
-                poc = self._poc_for(f)
-                judge = await prober.llm_judge(f"{f.get('access_level')} @ {f.get('location')}", poc)
+                log.warning("立足点探针异常: %s", e)
+            if pr is not None:
+                f.setdefault("props", {})["probe"] = pr.as_dict()
+                await self._log_probe(board, task_id, wid, f"foothold:{f.get('label','')}", pr)
+            # LLM-judge（Stage 3）：对【无确定性举证义务的类】(web_user/web_admin/db_read/业务逻辑——
+            # probe_foothold 返回 None)，或主动探针被策略降级/未确定性证成的高价值声称，启用 llm_judge 时
+            # 收【可复现 PoC】上【低信任辅助评级】。verdict 永远由 verifier 的确定性路决定，llm-judge 绝不驱动。
+            det_proven = pr is not None and pr.verdict == PROVEN and pr.trust == "deterministic"
+            downgraded = pr is not None and pr.method == "downgraded"
+            if self.probe_policy.llm_judge and not det_proven and (not obligations.has_deterministic(access) or downgraded):
+                poc = await self._poc_for(f, board, task_id)
+                claim = f"{access} @ {f.get('location','')}（{f.get('label','')}）"
+                judge = await prober.llm_judge(claim, poc)
                 if judge is not None:
-                    f["props"]["probe_judge"] = judge.as_dict()
+                    f.setdefault("props", {})["probe_judge"] = judge.as_dict()
                     await self._log_probe(board, task_id, wid, f"judge:{f.get('label','')}", judge)
 
     async def _log_probe(self, board, task_id: str, wid: str, subject: str, pr) -> None:
@@ -214,13 +221,25 @@ class WebSolverExecutor(Executor):
             "probe": pr.method, "verdict": pr.verdict, "tier": pr.tier,
             "trust": pr.trust, "subject": subject})
 
-    @staticmethod
-    def _poc_for(foothold: dict) -> str:
-        """给 LLM-judge 的可复现 PoC：replay 配方 + 立足点证据（外部降级路径的辅助材料）。"""
+    async def _poc_for(self, foothold: dict, board, task_id: str) -> str:
+        """给 LLM-judge 的【可复现 PoC】：replay 配方 + solver 自述证据 + 关联的 MITM 原始请求/响应。
+        MITM 流是透明留痕的真实流量（LLM 造不出），让辅助评级建立在可复现证据上而非叙述。"""
         props = foothold.get("props") or {}
-        replay = props.get("replay") or {}
-        return (f"replay={replay}\nlocation={foothold.get('location')}\n"
-                f"evidence={props.get('evidence','')[:1500]}")
+        loc = foothold.get("location") or ""
+        parts = [f"访问类: {foothold.get('access_level','')}",
+                 f"location: {loc}",
+                 f"replay(可重放配方): {props.get('replay') or '(无)'}",
+                 f"solver 自述证据: {(props.get('evidence','') or '')[:800]}"]
+        try:
+            flows = await board.http_flows(task_id)
+        except Exception:  # noqa: BLE001
+            flows = []
+        rel = [fl for fl in flows if loc and (loc in (fl["url"] or "") or loc in (fl["host"] or ""))]
+        for fl in (rel or list(flows))[-2:]:          # 关联流优先，否则取最近两条
+            parts.append(f"MITM {fl['method']} {fl['url']} → {fl['status']}\n"
+                         f"  req_body={(fl['req_body'] or '')[:300]}\n"
+                         f"  resp_body={(fl['resp_body'] or '')[:600]}")
+        return "\n".join(parts)
 
     async def _handle(self, name, args, tr: Transition, task_id, board, wid="ws") -> tuple[str, bool]:
         if name == "sandbox_exec":

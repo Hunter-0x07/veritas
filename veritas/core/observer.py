@@ -52,6 +52,20 @@ class Observer:
                 keys = ", ".join(a["dedup_key"] for a in untested[:5])
                 await self._flag(task_id, "early_stop",
                                  f"前沿耗尽但仍有 {len(untested)} 个资产未攻破（{keys}…），可能早停")
+        # Stage 3 交叉核：只有 LLM-judge 低信任评级支撑的立足点（无确定性举证义务）——
+        # 确定性才计入进展，这类即便 LLM 判"真"也要人工复核，绝不静默抬高可信度。
+        for f in footholds:
+            props = f["props"] or {}
+            judge = props.get("probe_judge")
+            if not judge:
+                continue
+            probe = props.get("probe") or {}
+            det_proven = probe.get("verdict") == "verified" or (
+                probe.get("verdict") == "proven" and probe.get("trust") == "deterministic")
+            if not det_proven:
+                await self._flag(task_id, f"llm_judged:{f['label']}",
+                                 f"{f['label']}（{f['access_level']}）无确定性举证义务、仅 LLM-judge 低信任评级："
+                                 f"{(judge.get('detail') or '')[:160]} —— 需人工复核（只确定性证据计入进展）")
 
     async def _detect_ruts(self, task_id: str) -> None:
         counts: dict[tuple, int] = {}

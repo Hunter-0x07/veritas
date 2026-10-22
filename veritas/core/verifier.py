@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 
+from . import obligations
 from .state import rank
 
 VERIFIED = "verified"
@@ -35,14 +36,8 @@ UNPROVEN = "unproven"
 _MIN_TOK = 4          # 参与溯源的 token 最小长度
 _MIN_COVER = 0.5      # 字符串重叠兜底的命中比例阈值
 
-# —— 通用"效果痕迹"(proof-of-effect)：高熵/结构化串，由目标经真实工具吐出，LLM 造不出 ——
-_DUMP_RID500 = re.compile(r"(?mi)^[^\s:]+:500:[0-9a-f]{32}:[0-9a-f]{32}:::")   # DCSync/SAM dump：RID-500 内置管理员
-_DUMP_KRBTGT = re.compile(r"(?mi)^krbtgt:\d+:[0-9a-f]{32}:[0-9a-f]{32}:::")    # krbtgt（域信任根密钥）
-_DUMP_ANY = re.compile(r"(?mi)^[^\s:]+:\d+:[0-9a-f]{32}:[0-9a-f]{32}:::")      # 任一 user:RID:LM:NT 行
-_ROOT_ID = re.compile(r"uid=0\(")                                             # id：root
-_SHELL_ID = re.compile(r"uid=\d+\(")                                          # id：拿到某用户 shell
-_NTHASH_FULL = re.compile(r"^[0-9a-f]{32}$", re.I)                            # 一个 secret 本身就是 NT hash
-# 明确的认证/利用失败痕迹（用于保守反证）
+# proof-of-effect（每级举证义务）已迁到 core/obligations.py 的注册表（单一真源，Stage 3）；
+# 本层只查 obligations.proof_of_effect(...)。下面仅保留凭据保守反证用的失败痕迹。
 _AUTH_FAIL = re.compile(
     r"(?i)(STATUS_LOGON_FAILURE|LOGON_FAILURE|KDC_ERR_PREAUTH_FAILED|"
     r"authentication failed|auth(?:entication)? error|access[_ ]denied|permission denied|"
@@ -107,25 +102,6 @@ class Verifier:
         """rc=0 成功命令拼成的串（location 真跑过 / secret 真用过 从这里找）。"""
         return "\n".join((t.get("exec") or "") for t in traces if t.get("rc") == 0)
 
-    # ---- proof-of-effect：世界痕迹是否满足该访问级别的举证义务 ----
-    def _proof_of_effect(self, access_level: str, out: str, verified_secrets) -> bool:
-        r = rank(access_level)
-        if r >= rank("domain_admin"):
-            # DCSync 真 dump 到 RID-500 内置域管 / krbtgt 行
-            if _DUMP_RID500.search(out) or _DUMP_KRBTGT.search(out):
-                return True
-            # 或：一条 verified 的 NT-hash 正好出现在真实 dump 输出里（凭据佐证立足点）
-            for s in verified_secrets:
-                if s and _NTHASH_FULL.match(s) and s in out and _DUMP_ANY.search(out):
-                    return True
-            return False
-        if r >= rank("root"):
-            return bool(_ROOT_ID.search(out))        # id → uid=0
-        if r >= rank("shell"):
-            return bool(_SHELL_ID.search(out))        # id → 拿到某 shell
-        # db_read / web_admin / web_user 暂无通用效果痕迹 → 交给 location/traceable 兜底（Stage 3 补举证义务）
-        return False
-
     def foothold(self, access_level: str, location: str, evidence: str,
                  traces: list[dict], verified_secrets=(), probe=None) -> str:
         if self.mode != "live":
@@ -137,8 +113,8 @@ class Verifier:
             return pv
         out = self._outputs(traces)
         cmd = self._ok_commands(traces)
-        # 1) 世界里有满足该级别举证义务的效果痕迹
-        if self._proof_of_effect(access_level, out, verified_secrets):
+        # 1) 世界里有满足该级别举证义务的效果痕迹（查 Stage 3 举证义务注册表，单一真源）
+        if obligations.proof_of_effect(access_level, out, verified_secrets):
             return VERIFIED
         # domain_admin 必须有 proof-of-effect（DCSync 抓到域密钥才算拿下）——
         # "够到 DC / 在 DC 上跑过命令"任何域用户都能做到，≠ 域管，故不接受下面的弱证据兜底。

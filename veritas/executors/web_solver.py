@@ -113,7 +113,9 @@ class WebSolverExecutor(Executor):
         self.llm = llm
         self.sandbox = sandbox
         self.scope = scope
-        self.probe_policy = probe_policy or ProbePolicy()  # safe-probe 策略（Stage 2 主动探针）
+        # safe-probe 策略（Stage 2 主动探针）：归一化成带行为的 ProbePolicy——
+        # engine 传进来的是 config.ProbeCfg(纯数据，无 active_allowed)，这里统一转换，防类型错配。
+        self.probe_policy = ProbePolicy.from_cfg(probe_policy) if probe_policy is not None else ProbePolicy()
         self.mitm = MitmRecorder(sandbox)  # 本 solver 沙箱的全链路 HTTP 留痕
 
     async def execute(self, opp, board, task_id: str) -> ExecResult:

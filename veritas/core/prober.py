@@ -79,6 +79,17 @@ class ProbePolicy:
     budget: int = 8                   # 本次 run 的主动探针执行预算（防对目标连续重活）
     llm_judge: bool = False           # 外部降级路径是否启用 LLM-judge 辅助评级
 
+    @classmethod
+    def from_cfg(cls, cfg) -> "ProbePolicy":
+        """从 config.ProbeCfg(纯数据，无行为) 构造带行为的策略。duck-typed 读属性，
+        避免 config↔core 双向耦合；也兼容直接传 ProbePolicy。"""
+        if isinstance(cfg, cls):
+            return cfg
+        return cls(enabled=getattr(cfg, "enabled", True),
+                   authorization=getattr(cfg, "authorization", "external"),
+                   budget=getattr(cfg, "budget", 8),
+                   llm_judge=getattr(cfg, "llm_judge", False))
+
     def active_allowed(self, tier: str) -> bool:
         if not self.enabled:
             return False

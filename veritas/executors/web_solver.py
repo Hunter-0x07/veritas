@@ -59,6 +59,9 @@ SYSTEM = (
     "送进【该主机】shell 的命令（web 命令注入用 `curl -s -G '<url>' --data-urlencode '<param>=<前缀>; {CMD}'`，"
     "引擎会把 {CMD} 换成随机 nonce 回环命令验证真能执行）；domain_admin → `replay.verify_command`：一条可直接重跑、"
     "输出里会出现 RID-500/krbtgt 行的 DCSync 命令。"
+    "**web 漏洞立足点**（SQLi→db_read/web_admin、SSTI、LFI、开放重定向）→ `replay.probe_type` + 注入点"
+    "（`url`/`param`/`method`/`injection`/`base_params`）：引擎会用引擎自选标记/挑战（nonce union、两数乘积、"
+    "读 /etc/passwd、唯一回调 URL）经该注入点回环做**确定性**验证，比叙述可靠得多。"
 )
 
 
@@ -85,14 +88,23 @@ def _schemas() -> list[dict]:
             "evidence": {"type": "string", "description": "支撑证据（真实响应片段）"},
             "replay": {"type": "object",
                 "description": "可重放 PoC / 访问配方：引擎会据此【主动探针】复现该立足点来坐实（优于从日志反推）。"
-                    "shell/root 用 `command_template`——一条能在沙箱里执行、把 {CMD} 占位符送进【该主机】shell 的命令，"
-                    "引擎会把 {CMD} 替换成随机 nonce 回环探命令（web 命令注入建议用 "
-                    "`curl -s -G '<url>' --data-urlencode '<param>=<前缀>; {CMD}'` 形式，确保 {CMD} 经注入落进目标 shell）；"
-                    "domain_admin 用 `verify_command`——一条可直接重跑、输出里会出现 RID-500/krbtgt 行的 DCSync 命令。",
+                    "shell/root 用 `command_template`——把 {CMD} 占位符送进【该主机】shell 的命令"
+                    "（web 命令注入用 `curl -s -G '<url>' --data-urlencode '<param>=<前缀>; {CMD}'`）；"
+                    "domain_admin 用 `verify_command`——可直接重跑、输出含 RID-500/krbtgt 行的 DCSync 命令；"
+                    "**web 漏洞立足点**（SQLi/SSTI/LFI/开放重定向）填 `probe_type` + 注入点"
+                    "（`url`/`param`/`method`/`injection`）——引擎会用自选标记/挑战经该注入点回环做确定性验证。",
                 "properties": {
                     "command_template": {"type": "string", "description": "含 {CMD} 占位符的任意命令执行配方（shell/root）"},
                     "verify_command": {"type": "string", "description": "可直接重跑坐实的命令（domain_admin 的 DCSync）"},
-                    "domain": {"type": "string"}, "target": {"type": "string"}}}},
+                    "domain": {"type": "string"}, "target": {"type": "string"},
+                    "probe_type": {"type": "string", "enum": ["sqli", "ssti", "lfi", "open_redirect"],
+                                   "description": "web 漏洞类型，引擎据此选确定性探针"},
+                    "url": {"type": "string", "description": "注入点 URL"},
+                    "param": {"type": "string", "description": "可注入参数名"},
+                    "method": {"type": "string", "description": "GET/POST（默认 GET）"},
+                    "injection": {"type": "string", "enum": ["query", "form_body", "json_body"],
+                                  "description": "参数位置（默认 query）"},
+                    "base_params": {"type": "object", "description": "同请求其他参数 {名:值}"}}}},
            ["access_level", "label", "evidence"]),
         fn("report_credential", "登记拿到的凭据",
            {"kind": {"type": "string", "enum": ["password", "hash", "token", "key"]},

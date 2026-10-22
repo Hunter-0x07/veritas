@@ -21,3 +21,9 @@
 - 拿到登录 token/session → `report_foothold(access_level=web_user 或 web_admin, evidence=真实响应片段)`
 - dump 到用户名+hash → `report_credential(kind=hash, ...)`；dump 到数据 → `report_loot`
 **证据纪律**：登记前确认响应里真有 token/数据，不要凭猜。
+
+## 带上 replay（引擎会主动确定性验证，强烈建议）
+report_foothold 填 `replay`，引擎会用自选标记/挑战经该注入点回环坐实（报错型/union 带回引擎 nonce/认证绕过差分），比叙述可靠：
+- `replay={"probe_type":"sqli","url":"<target>/rest/products/search","param":"q","method":"GET"}`
+- JSON body 注入：`replay={"probe_type":"sqli","url":"<target>/rest/user/login","param":"email","method":"POST","injection":"json_body","base_params":{"password":"x"}}`
+> 注意：**回显 payload 字符串不算证据**（那是反射不是注入）；引擎验不出会判 unproven（不冤枉也不冒充）。

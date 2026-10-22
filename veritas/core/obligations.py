@@ -51,7 +51,9 @@ class ObligationSpec:
 
     @property
     def deterministic(self) -> bool:
-        return self.proof is not None
+        # 有确定性手段即可：被动判据(proof) 或 主动探针(active)——web 漏洞类的确定性来自主动探针
+        # （引擎自选标记/挑战经漏洞点回环），记录输出里没有通用被动痕迹，故 proof 可为 None。
+        return self.proof is not None or (self.active not in (None, "", "none"))
 
 
 # —— 注册表：Stage 1/2 的硬编码义务迁到这里（单一真源）——
@@ -68,9 +70,24 @@ REGISTRY: dict[str, ObligationSpec] = {
         "DCSync 真 dump 到 RID-500 内置域管 / krbtgt 行（或 verified NT-hash 现于真实 dump 佐证）；"
         "不接受'够到 DC'这种弱证据",
         _da_proof, active="re_dcsync", noise="high"),
-    # web_user / web_admin / db_read / 各漏洞类：暂无确定性通用义务 → 不登记（has_deterministic=False）
-    #   → 走 PoC + LLM-judge 低信任辅助评级（executor 编排，Observer 交叉核）。
-    #   Stage 3 后续增量再为 file_read/sqli/ssrf(OOB) 等补【确定性】义务（引擎自选标记/canary 回环）。
+    # —— Cut 2a：web 漏洞类的【确定性】义务（按 replay.probe_type 键入）。确定性来自【主动探针】
+    #    （引擎自选标记/挑战经漏洞点回环），prober 的 _probe_<type> 实现；proof=None（无通用被动痕迹）。
+    #    noise=low：都是幂等 HTTP 读式探针，外部授权目标也允许（确认 web 漏洞是 HackerOne 核心用例）。
+    "ssti": ObligationSpec(
+        "ssti", "引擎自选两数之积出现在响应（模板真求值，而非回显表达式字面）",
+        None, active="ssti", noise="low"),
+    "sqli": ObligationSpec(
+        "sqli", "报错型(破语法 vs 平衡) / 认证绕过(token 差分) / 布尔差分 / union 标记回显 之一成立"
+                "（回显 payload 字符串不算）",
+        None, active="sqli", noise="low"),
+    "lfi": ObligationSpec(
+        "lfi", "读到引擎可预测的文件内容（/etc/passwd 的 root:...:0:0: 结构 / 已知主机名等）",
+        None, active="lfi", noise="low"),
+    "open_redirect": ObligationSpec(
+        "open_redirect", "3xx Location 恰为引擎自选的唯一外部 URL（参数真控重定向目标）",
+        None, active="open_redirect", noise="low"),
+    # web_user / web_admin / idor / 业务逻辑 等：暂无确定性义务（未登记，has_deterministic=False）
+    #   → 走 PoC + LLM-judge 低信任辅助评级（executor 编排，Observer 交叉核）。Cut 2b/2c/2d 再补。
 }
 
 

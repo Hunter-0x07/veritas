@@ -97,8 +97,9 @@ def _schemas() -> list[dict]:
                     "command_template": {"type": "string", "description": "含 {CMD} 占位符的任意命令执行配方（shell/root）"},
                     "verify_command": {"type": "string", "description": "可直接重跑坐实的命令（domain_admin 的 DCSync）"},
                     "domain": {"type": "string"}, "target": {"type": "string"},
-                    "probe_type": {"type": "string", "enum": ["sqli", "ssti", "lfi", "open_redirect"],
-                                   "description": "web 漏洞类型，引擎据此选确定性探针"},
+                    "probe_type": {"type": "string",
+                                   "enum": ["sqli", "ssti", "lfi", "open_redirect", "ssrf", "xxe"],
+                                   "description": "web 漏洞类型，引擎据此选确定性探针（ssrf/xxe 需配 OOB）"},
                     "url": {"type": "string", "description": "注入点 URL"},
                     "param": {"type": "string", "description": "可注入参数名"},
                     "method": {"type": "string", "description": "GET/POST（默认 GET）"},
@@ -122,10 +123,11 @@ def _schemas() -> list[dict]:
 class WebSolverExecutor(Executor):
     kinds = ("initial_access", "web_exploit")
 
-    def __init__(self, llm: LLMClient, sandbox: Sandbox, scope=None, probe_policy=None):
+    def __init__(self, llm: LLMClient, sandbox: Sandbox, scope=None, probe_policy=None, oob=None):
         self.llm = llm
         self.sandbox = sandbox
         self.scope = scope
+        self.oob = oob          # OOB canary provider（SSRF/XXE 用；None→prober 内用 NoopOOB）
         # safe-probe 策略（Stage 2 主动探针）：归一化成带行为的 ProbePolicy——
         # engine 传进来的是 config.ProbeCfg(纯数据，无 active_allowed)，这里统一转换，防类型错配。
         self.probe_policy = ProbePolicy.from_cfg(probe_policy) if probe_policy is not None else ProbePolicy()
@@ -187,7 +189,7 @@ class WebSolverExecutor(Executor):
         结果写进各自 props['probe']（供 solver 传给 verifier），探针命令也落 activity（可复现 + 世界底物）。"""
         if not self.probe_policy.enabled:
             return
-        prober = Prober(self.sandbox, self.probe_policy, llm=self.llm)
+        prober = Prober(self.sandbox, self.probe_policy, llm=self.llm, oob=self.oob)
         traces = await board.exec_traces(task_id)
         proven_creds: list[dict] = []
         for cr in tr.credentials:

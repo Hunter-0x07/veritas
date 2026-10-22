@@ -43,6 +43,7 @@ class ProbeCfg:
     authorization: str = "external"   # "lab"=授权靶场(各级可) | "external"=外部(仅低噪声)
     budget: int = 8                   # 本次 run 的主动探针执行预算（防对目标连续重活）
     llm_judge: bool = False           # 外部降级路径是否启用 LLM-judge 辅助评级（低信任档）
+    oob_url: str | None = None        # OOB canary 监听器 base_url（SSRF/XXE 探针用；需引擎+目标都可达）
 
 
 @dataclass

@@ -86,6 +86,13 @@ REGISTRY: dict[str, ObligationSpec] = {
     "open_redirect": ObligationSpec(
         "open_redirect", "3xx Location 恰为引擎自选的唯一外部 URL（参数真控重定向目标）",
         None, active="open_redirect", noise="low"),
+    # Cut 2b：带外（OOB）确定性义务——目标真发起带外请求打中引擎自选 canary（需配 probe.oob_url）
+    "ssrf": ObligationSpec(
+        "ssrf", "目标服务端发起带外请求、打中引擎自选的唯一 OOB canary（只有真 SSRF 才会回连）",
+        None, active="ssrf", noise="low"),
+    "xxe": ObligationSpec(
+        "xxe", "XML 外部实体被解析展开、回连引擎自选的 OOB canary（只有真 XXE 才会回连）",
+        None, active="xxe", noise="low"),
     # web_user / web_admin / idor / 业务逻辑 等：暂无确定性义务（未登记，has_deterministic=False）
     #   → 走 PoC + LLM-judge 低信任辅助评级（executor 编排，Observer 交叉核）。Cut 2b/2c/2d 再补。
 }

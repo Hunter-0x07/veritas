@@ -37,3 +37,23 @@ class NoopOOB(OOBProvider):
 
     async def poll(self, token: str) -> bool:
         return False
+
+
+class HttpOOB(OOBProvider):
+    """自托管 HTTP canary（配合 runtime/oob_listener.py）。base_url 指向监听器，需【引擎 + 目标都可达】
+    （本地：同 docker 网的监听容器，如 http://veritas-oob:8098；外部：公网 IP / interactsh）。
+    poll 的实际 HTTP 由 prober 经沙箱 curl 发（沙箱与目标同网），本类只管 token 与 URL 逻辑。"""
+    available = True
+
+    def __init__(self, base_url: str):
+        self.base = base_url.rstrip("/")
+
+    async def new_token(self) -> tuple[str, str]:
+        t = "vz" + uuid.uuid4().hex[:16]
+        return t, f"{self.base}/c/{t}"       # 注入目标的 canary URL（目标回连即命中）
+
+    def hits_url(self, token: str) -> str:
+        return f"{self.base}/hits/{token}"   # prober 查询该 token 是否被打中
+
+    async def poll(self, token: str) -> bool:  # 兜底实现（通常由 prober 经沙箱 curl 查 hits_url）
+        return False

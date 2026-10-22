@@ -54,11 +54,15 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
         sandboxes = [Sandbox(f"veritas-{task_id[:8]}-s{i}", network=cfg.runtime.sandbox_network)
                      for i in range(nworkers)]
         # safe-probe 策略（Stage 2 主动探针）：executor 持沙箱在 verifier 判定前主动证成/证伪。
+        # OOB canary（Stage 3 Cut 2b）：配了 probe.oob_url 用 HttpOOB，否则 NoopOOB（SSRF/XXE 判 inconclusive）。
+        from ..runtime.oob import HttpOOB, NoopOOB
+        oob = HttpOOB(cfg.probe.oob_url) if getattr(cfg.probe, "oob_url", None) else NoopOOB()
         solvers = [Solver(f"s{i}", board,
-                          build_registry("live", llm, sandboxes[i], probe_policy=cfg.probe), verifier)
+                          build_registry("live", llm, sandboxes[i], probe_policy=cfg.probe, oob=oob), verifier)
                    for i in range(nworkers)]
-        log.info("safe-probe 策略：authorization=%s · budget=%d · llm_judge=%s（external 仅放低噪声 nonce 回环）",
-                 cfg.probe.authorization, cfg.probe.budget, cfg.probe.llm_judge)
+        log.info("safe-probe 策略：authorization=%s · budget=%d · llm_judge=%s · oob=%s",
+                 cfg.probe.authorization, cfg.probe.budget, cfg.probe.llm_judge,
+                 "on" if getattr(oob, "available", False) else "off")
     else:
         solvers = [Solver(f"s{i}", board, build_registry("mock"), verifier)
                    for i in range(nworkers)]

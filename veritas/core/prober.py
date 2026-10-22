@@ -200,7 +200,8 @@ class Prober:
         ptype = replay.get("probe_type") if isinstance(replay, dict) else None
         probe = {"ssti": self._probe_ssti, "sqli": self._probe_sqli,
                  "lfi": self._probe_lfi, "open_redirect": self._probe_open_redirect,
-                 "ssrf": self._probe_ssrf, "xxe": self._probe_xxe}.get(ptype)
+                 "ssrf": self._probe_ssrf, "xxe": self._probe_xxe,
+                 "xss": self._probe_xss, "authn": self._probe_authn}.get(ptype)
         if probe is not None:
             return await probe(foothold, replay)
         return None
@@ -511,6 +512,108 @@ class Prober:
         return ProbeResult(INCONCLUSIVE, "xxe", NOISE_LOW,
                            detail="提交外部实体 XML 后未见回连（实体被禁 / 非 XXE）→ unproven（不写反证）",
                            command=cmd, nonce=token)
+
+    async def _probe_xss(self, foothold: dict, replay: dict) -> ProbeResult:
+        """XSS 执行级（借归档 v1）：headless 浏览器加载注入 URL，payload【真执行】才会把引擎 token
+        写进顶层 window.__VERITAS 或弹含 token 的 dialog——而非"响应里出现 payload 字符串"(回显≠执行)。
+        注：用引擎进程内 Playwright（非沙箱），目标须【引擎主机可达】；playwright/chromium 未就绪→诚实降级。"""
+        guard = self._web_guard("xss")
+        if guard:
+            return guard
+        tmpl = replay.get("url_template") or ""
+        if "{payload}" not in tmpl:
+            url, param = replay.get("url", ""), replay.get("param", "")
+            if not url or not param:
+                return ProbeResult(INCONCLUSIVE, "xss", NOISE_LOW,
+                                   detail="replay 缺 url_template 或 url+param → 无法构造 XSS 探针", trust="none")
+            tmpl = f"{url}{'&' if '?' in url else '?'}{param}={{payload}}"
+        try:
+            from playwright.async_api import async_playwright
+        except Exception:  # noqa: BLE001
+            return ProbeResult(INCONCLUSIVE, "xss", NOISE_PASSIVE,
+                               detail="playwright 未安装 → 无法执行级验证 XSS（交兜底/LLM-judge）", trust="none")
+        from urllib.parse import quote
+        token = "vx" + secrets.token_hex(6)
+        payloads = [f"<img src=x onerror=\"window.__VERITAS='{token}'\">",
+                    f"<svg onload=\"window.__VERITAS='{token}'\">",
+                    f"<img src=x onerror=\"alert('{token}')\">"]
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                try:
+                    for pl in payloads:
+                        self._spent += 1
+                        url = tmpl.replace("{payload}", quote(pl))
+                        page = await browser.new_page()
+                        fired = {"d": False}
+
+                        async def _dlg(d):
+                            if token in (d.message or ""):
+                                fired["d"] = True
+                            await d.dismiss()
+
+                        page.on("dialog", _dlg)
+                        bad = False
+                        marker = ""
+                        try:
+                            resp = await page.goto(url, wait_until="load", timeout=15000)
+                            bad = bool(resp and resp.status >= 500)
+                            await page.wait_for_timeout(1200)
+                            marker = await page.evaluate("() => window.__VERITAS || ''")
+                        except Exception:  # noqa: BLE001
+                            marker = ""
+                        finally:
+                            await page.close()
+                        if not bad and (fired["d"] or str(marker) == token):
+                            return ProbeResult(PROVEN, "xss", NOISE_LOW,
+                                               detail=f"浏览器加载后 payload 真执行（{'弹窗' if fired['d'] else 'DOM 标记'}，token {token}）",
+                                               command=url, nonce=token)
+                        if not self._budget_left():
+                            break
+                finally:
+                    await browser.close()
+        except Exception as e:  # noqa: BLE001
+            return ProbeResult(INCONCLUSIVE, "xss", NOISE_LOW,
+                               detail=f"浏览器执行异常（chromium 未装？{e}）→ 交兜底", trust="none")
+        return ProbeResult(INCONCLUSIVE, "xss", NOISE_LOW,
+                           detail="所有 payload 均未观测到执行信号（已修复 / 非注入点 / 有 CSP）→ unproven（不写反证）",
+                           command=tmpl)
+
+    async def _probe_authn(self, foothold: dict, replay: dict) -> ProbeResult:
+        """web_user/web_admin：带【获得的会话】访问受保护资源，拿到【匿名基线拿不到】的东西 → 会话真授予访问。
+        基线差分（经沙箱 curl）：带会话 2xx/授权标记 vs 匿名 401/403/跳登录。无差异 → inconclusive。"""
+        guard = self._web_guard("authn")
+        if guard:
+            return guard
+        url = replay.get("url", "")
+        session = replay.get("session") or {}
+        marker = replay.get("authed_marker", "")
+        if not url or not session:
+            return ProbeResult(INCONCLUSIVE, "authn", NOISE_LOW,
+                               detail="replay 缺 url/session → 无法做基线差分（交兜底）", trust="none")
+
+        def curl(hdrs: dict) -> str:
+            c = f"curl -s -i -m 15 -L {_q(url)}"
+            for k, v in hdrs.items():
+                c += " -H " + _q(f"{k}: {v}")
+            return c
+
+        _rc1, o1 = await self._run(curl(session))
+        sa, _ha, ba = _parse_http(o1)
+        _rc2, o2 = await self._run(curl({}))                     # 匿名基线
+        sbase, _hb, bb = _parse_http(o2)
+        if marker and marker in (ba or "") and marker not in (bb or ""):
+            return ProbeResult(PROVEN, "authn", NOISE_LOW,
+                               detail="带会话访问出现授权标记、匿名不出现 → 会话真授予访问",
+                               command=curl(session), output=(ba or "")[:400], nonce=marker)
+        base_denied = (not sbase) or sbase in (401, 403) or (300 <= sbase < 400)
+        if sa and sa < 400 and base_denied:
+            return ProbeResult(PROVEN, "authn", NOISE_LOW,
+                               detail=f"带会话 {sa} 可访问、匿名 {sbase} 被拒 → 会话真授予访问（基线差分）",
+                               command=curl(session), output=f"authed={sa} anon={sbase}")
+        return ProbeResult(INCONCLUSIVE, "authn", NOISE_LOW,
+                           detail=f"带会话与匿名无显著访问差异（authed={sa} anon={sbase}）→ unproven（不写反证）",
+                           command=curl(session))
 
     # ========== 凭据探针 ==========
     async def probe_credential(self, cred: dict, traces: list[dict]) -> ProbeResult | None:

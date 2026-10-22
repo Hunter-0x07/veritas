@@ -93,6 +93,13 @@ REGISTRY: dict[str, ObligationSpec] = {
     "xxe": ObligationSpec(
         "xxe", "XML 外部实体被解析展开、回连引擎自选的 OOB canary（只有真 XXE 才会回连）",
         None, active="xxe", noise="low"),
+    # Cut 2c：XSS 执行级 + 访问级别(web_user/web_admin)基线差分
+    "xss": ObligationSpec(
+        "xss", "headless 浏览器加载后 payload 真执行（引擎 token 写进顶层 window / 弹含 token 的 dialog），非回显",
+        None, active="xss", noise="low"),
+    "authn": ObligationSpec(
+        "authn", "带获得的会话访问受保护资源，拿到匿名基线拿不到的东西（web_user/web_admin 真授予访问）",
+        None, active="authn", noise="low"),
     # web_user / web_admin / idor / 业务逻辑 等：暂无确定性义务（未登记，has_deterministic=False）
     #   → 走 PoC + LLM-judge 低信任辅助评级（executor 编排，Observer 交叉核）。Cut 2b/2c/2d 再补。
 }

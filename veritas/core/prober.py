@@ -201,7 +201,8 @@ class Prober:
         probe = {"ssti": self._probe_ssti, "sqli": self._probe_sqli,
                  "lfi": self._probe_lfi, "open_redirect": self._probe_open_redirect,
                  "ssrf": self._probe_ssrf, "xxe": self._probe_xxe,
-                 "xss": self._probe_xss, "authn": self._probe_authn}.get(ptype)
+                 "xss": self._probe_xss, "authn": self._probe_authn,
+                 "idor": self._probe_idor}.get(ptype)
         if probe is not None:
             return await probe(foothold, replay)
         return None
@@ -614,6 +615,32 @@ class Prober:
         return ProbeResult(INCONCLUSIVE, "authn", NOISE_LOW,
                            detail=f"带会话与匿名无显著访问差异（authed={sa} anon={sbase}）→ unproven（不写反证）",
                            command=curl(session))
+
+    async def _probe_idor(self, foothold: dict, replay: dict) -> ProbeResult:
+        """IDOR/越权对象访问：用【自己的会话】去读【他人对象】，若拿到只属于他人的唯一标记 → 越权确证。
+        other_marker 由引擎/solver（掌握另一账号 B）给出（B 对象里独有的数据）；经沙箱 curl。
+        前提：需知道'他人对象的唯一标记'——这正是未知外部目标上难点，故靠双账号配方（靶场/已控两账号）。"""
+        guard = self._web_guard("idor")
+        if guard:
+            return guard
+        url = replay.get("url", "")
+        session = replay.get("session") or {}
+        other = replay.get("other_marker", "")
+        if not url or not other:
+            return ProbeResult(INCONCLUSIVE, "idor", NOISE_LOW,
+                               detail="replay 缺 url / other_marker（他人对象唯一标记）→ 无法确定性验证 IDOR", trust="none")
+        c = f"curl -s -i -m 15 -L {_q(url)}"
+        for k, v in session.items():
+            c += " -H " + _q(f"{k}: {v}")
+        _rc, out = await self._run(c)
+        status, _h, body = _parse_http(out)
+        if status and status < 400 and other in (body or ""):
+            return ProbeResult(PROVEN, "idor", NOISE_LOW,
+                               detail=f"用自己会话读到他人对象的唯一标记（{other[:40]}）→ 越权访问(IDOR)确证",
+                               command=c, output=(body or "")[:400], nonce=other)
+        return ProbeResult(INCONCLUSIVE, "idor", NOISE_LOW,
+                           detail=f"未读到他人对象标记（status={status}，可能有访问控制/非 IDOR）→ unproven（不写反证）",
+                           command=c, output=(body or "")[:300])
 
     # ========== 凭据探针 ==========
     async def probe_credential(self, cred: dict, traces: list[dict]) -> ProbeResult | None:

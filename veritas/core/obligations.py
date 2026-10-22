@@ -100,6 +100,10 @@ REGISTRY: dict[str, ObligationSpec] = {
     "authn": ObligationSpec(
         "authn", "带获得的会话访问受保护资源，拿到匿名基线拿不到的东西（web_user/web_admin 真授予访问）",
         None, active="authn", noise="low"),
+    # Cut 2d：IDOR/越权对象访问——用自己会话读到他人对象的唯一标记（需掌握另一账号 B 的对象标记）
+    "idor": ObligationSpec(
+        "idor", "用自己的会话读到只属于他人对象的唯一标记（other_marker）→ 越权访问",
+        None, active="idor", noise="low"),
     # web_user / web_admin / idor / 业务逻辑 等：暂无确定性义务（未登记，has_deterministic=False）
     #   → 走 PoC + LLM-judge 低信任辅助评级（executor 编排，Observer 交叉核）。Cut 2b/2c/2d 再补。
 }

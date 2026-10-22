@@ -142,6 +142,10 @@ Veritas v1 做成了"漏洞验证器"（确认 SQLi/XSS 三态裁决就结束）
 - **M5 · 长程 + 工程化 + 面向未知靶场的证明模型**
   完成定义：冷图压缩落地（控长程成本）+ 跨 run 策略记忆（向量库复用成功 kill chain）+ 分级自主/审批门（横向/破坏性 HITL）+ 多 provider + kill chain 可视化回放 + **proof-of-effect verifier（验"世界"不验"报告"）**。
 
+  ### 冷图压缩（cold compaction）——控长程 token 成本（🚧 第一刀已落地 2026-10-22）
+  **为什么**：token 成本全在 `web_solver` 的 agentic loop——每步把 tool 结果塞进 `messages`、每次 `llm.chat` 重发整段历史 → 无限增长（实测单 run ~1M in tokens）。**关键洞察**（与 ARTEX 不同）：ARTEX 的 LLM 每轮看「图总览」、冷子图折成 digest 节点缩总览；veritas 的 LLM 只看自己的**转录**（攻击图在 Postgres、靠 `search_worker_traces` 按需取），故冷图压缩 = **转录压缩**。
+  **已落地**：`llm/compaction.py`（纯函数 `compact_messages`）——转录超阈值（≈50K tokens）就把中段旧 round-trip 折成**确定性 digest**（每 tool_call 压成「命令→输出尾」一行 + 指向 `search_worker_traces` 恢复原文），保留 system+初始任务+最近 N 轮热前沿，折到低水位去抖。**按完整 round-trip 折叠**保 tool_call 配对合法（不留悬空 tool）；**零额外 LLM 成本**（确定性滚动）；只动转录、不动 DB 攻击图/战果。`web_solver` loop 每次 `llm.chat` 前调用。借 ARTEX coldgraph 原则（折冷/留热前沿/去抖低水位），digest 用确定性（而非 LLM 摘要，契合控成本 + 避免"谁压谁验"）。**验证**：17 确定性单测（no-op / 折叠后有界 / 结构合法 tool_call 配对 / 保前沿 / digest 滚动行+指向检索 / 再压缩合并不累积 / 60 步循环转录有界 peak<1.5×阈值）+ prober 49 零回归。**后续**：checkpoint 断点续跑、阈值 config 化、LLM 摘要式 digest（可选开关）。
+
   ### 证明模型（proof-of-effect verifier）——面向未知靶场的结论可信
   **为什么**：M4 的 `verifier.py` 验的是「solver 自述 evidence ↔ 命令输出的字符串重叠」——声称和证据都由 LLM 挑，本质是**验"报告"不验"世界"**。后果：调 prompt 让模型把 evidence 写成 verifier 想要的样子就能变绿 = **过拟合某个模型的输出格式**，再跑一次也只证明"模型输出符合预期"，而非"攻击真发生"。要挖 HackerOne / 上未知靶场（项目定位第一性），必须把验证锚到**世界**。
   **原则**：verdict 由系统从【已记录的真实世界底物】(`activity` 的 exec/rc/out、`http_flows`/MITM) 按**每个访问级别的"举证义务"**自行重新推导；solver 的 evidence/location 只当线索/锚点。三态收敛（借 strix 的 closure discipline）：`verified`（义务达成）/ `refuted`（世界里有明确反证，保守触发）/ `unproven`（open_proof_gap：不计入进展，但记录上报、绝不冒充成功也不偷偷丢）。证据强度阶梯：用成功的凭据 > 效果痕迹(proof-of-effect) > 高熵密文在真实输出里+凭据佐证 > location 真跑过 > 字符串重叠(最弱)。

@@ -13,6 +13,7 @@ from .. import knowledge
 from ..core import obligations
 from ..core.prober import PROVEN, Prober, ProbePolicy
 from ..llm import LLMClient
+from ..llm.compaction import compact_messages
 from ..runtime import MitmRecorder, Sandbox
 from .base import ExecResult, Executor, Transition
 
@@ -157,6 +158,11 @@ class WebSolverExecutor(Executor):
 
         try:
             for step in range(1, MAX_STEPS + 1):
+                # 冷图压缩：转录超阈值就把旧 round-trip 折成确定性 digest（攻击图状态在 DB，细节可
+                # search_worker_traces 恢复），控长程 token 成本。只动转录、不动战果。
+                messages, _folded = compact_messages(messages)
+                if _folded:
+                    log.info("[%s] 冷图压缩：折叠 %d 条旧转录（step %d，控长程成本）", wid, _folded, step)
                 msg = await self.llm.chat(messages, tools=tools)
                 calls = getattr(msg, "tool_calls", None)
                 if not calls:

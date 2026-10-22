@@ -69,6 +69,11 @@ _OPERATIONAL = re.compile(
     r"can.?t contact|unreachable|RemoteOperations failed|network error|no route to host|"
     r"name or service not known")
 _HOST_TOK = re.compile(r"\b(?:\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9][a-z0-9.-]*\.[a-z0-9.-]+)\b", re.I)
+_IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+# 文件名样式的 token（xxx.py / xxx.conf …）会被 FQDN 正则误当主机名，排除之（如脚本名 ldapt.py）
+_FILE_SUFFIX = re.compile(
+    r"(?i)\.(py|txt|sh|bash|conf|cfg|ini|json|ya?ml|log|md|xml|html?|php|pem|key|crt|cer|"
+    r"cache|ccache|csv|tsv|db|sqlite|bak|out|tmp|zip|tar|gz|exe|dll|so|jar|ps1|bat)$")
 
 
 @dataclass
@@ -121,7 +126,11 @@ def _new_nonce() -> str:
 
 
 def _bare_hosts(text: str) -> list[str]:
-    return _HOST_TOK.findall(text or "")
+    """从文本抽主机/IP 候选：排除文件名样式 token（xxx.py 等误命中），IP 优先（更可能是真目标）。"""
+    hits = [h for h in _HOST_TOK.findall(text or "")
+            if _IPV4.match(h) or not _FILE_SUFFIX.search(h)]
+    hits.sort(key=lambda h: 0 if _IPV4.match(h) else 1)   # IP 优先，其次 FQDN
+    return hits
 
 
 class Prober:

@@ -58,7 +58,8 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
         from ..runtime.oob import HttpOOB, NoopOOB
         oob = HttpOOB(cfg.probe.oob_url) if getattr(cfg.probe, "oob_url", None) else NoopOOB()
         solvers = [Solver(f"s{i}", board,
-                          build_registry("live", llm, sandboxes[i], probe_policy=cfg.probe, oob=oob), verifier)
+                          build_registry("live", llm, sandboxes[i], probe_policy=cfg.probe, oob=oob,
+                                         runtime=cfg.runtime), verifier)
                    for i in range(nworkers)]
         log.info("safe-probe 策略：authorization=%s · budget=%d · llm_judge=%s · oob=%s",
                  cfg.probe.authorization, cfg.probe.budget, cfg.probe.llm_judge,

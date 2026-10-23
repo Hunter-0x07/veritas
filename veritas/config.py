@@ -30,6 +30,13 @@ class RuntimeCfg:
     max_rounds: int = 30
     budget_usd: float = 5.0
     sandbox_network: str = "host"   # M3 横向：连靶场 frontend 网，让 attacker 只能到 edge
+    # web_solver 每个机会的 agentic loop 步数上限。冷图压缩把转录成本解耦后可放开，给未知深链更多探索余量。
+    max_steps: int = 120
+    # 冷图压缩（llm/compaction.py）阈值：转录超 compact_chars 字符(≈chars/4 tokens)就折叠；保留最近
+    # compact_keep 个完整 round-trip 热前沿。效果优先→默认给宽松值（只在很长的 run 才触发；想 live 看
+    # 触发可临时调小 compact_chars 强制触发）。
+    compact_chars: int = 200000
+    compact_keep: int = 8
 
 
 @dataclass

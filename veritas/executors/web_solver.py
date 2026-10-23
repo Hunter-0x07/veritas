@@ -19,7 +19,8 @@ from .base import ExecResult, Executor, Transition
 
 log = logging.getLogger("veritas.web_solver")
 
-MAX_STEPS = 60
+MAX_STEPS = 120   # agentic loop 步数上限的 fallback 默认（dispatch runtime.max_steps 可覆盖）；
+                  # 冷图压缩把转录成本解耦后从 60 放开，给未知深链更多探索余量
 _ACCESS = ("external", "recon", "web_user", "web_admin", "db_read", "shell", "root", "domain_admin")
 
 SYSTEM = (
@@ -129,11 +130,17 @@ def _schemas() -> list[dict]:
 class WebSolverExecutor(Executor):
     kinds = ("initial_access", "web_exploit")
 
-    def __init__(self, llm: LLMClient, sandbox: Sandbox, scope=None, probe_policy=None, oob=None):
+    def __init__(self, llm: LLMClient, sandbox: Sandbox, scope=None, probe_policy=None, oob=None,
+                 runtime=None):
         self.llm = llm
         self.sandbox = sandbox
         self.scope = scope
         self.oob = oob          # OOB canary provider（SSRF/XXE 用；None→prober 内用 NoopOOB）
+        # agentic loop 步数上限 + 冷图压缩参数（可由 dispatch runtime 调；冷图压缩让步数不再被成本卡住）
+        self.max_steps = int(getattr(runtime, "max_steps", None) or MAX_STEPS)
+        from ..llm.compaction import DEFAULT_MAX_CHARS, DEFAULT_KEEP_RECENT
+        self.compact_chars = int(getattr(runtime, "compact_chars", None) or DEFAULT_MAX_CHARS)
+        self.compact_keep = int(getattr(runtime, "compact_keep", None) or DEFAULT_KEEP_RECENT)
         # safe-probe 策略（Stage 2 主动探针）：归一化成带行为的 ProbePolicy——
         # engine 传进来的是 config.ProbeCfg(纯数据，无 active_allowed)，这里统一转换，防类型错配。
         self.probe_policy = ProbePolicy.from_cfg(probe_policy) if probe_policy is not None else ProbePolicy()
@@ -157,10 +164,10 @@ class WebSolverExecutor(Executor):
         finished = False
 
         try:
-            for step in range(1, MAX_STEPS + 1):
+            for step in range(1, self.max_steps + 1):
                 # 冷图压缩：转录超阈值就把旧 round-trip 折成确定性 digest（攻击图状态在 DB，细节可
                 # search_worker_traces 恢复），控长程 token 成本。只动转录、不动战果。
-                messages, _folded = compact_messages(messages)
+                messages, _folded = compact_messages(messages, self.compact_chars, self.compact_keep)
                 if _folded:
                     log.info("[%s] 冷图压缩：折叠 %d 条旧转录（step %d，控长程成本）", wid, _folded, step)
                 msg = await self.llm.chat(messages, tools=tools)

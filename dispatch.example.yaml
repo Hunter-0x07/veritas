@@ -21,6 +21,7 @@ runtime:
   # 冷图压缩（控长程 token 成本，见 veritas/llm/compaction.py）。效果优先→默认宽松，只在很长的 run 才触发。
   compact_chars: 200000    # 转录超此字符量(≈50K tokens)才折叠旧 round-trip；想 live 看触发可临时调小(如 8000)
   compact_keep: 8          # 压缩时保留最近 N 个完整 round-trip（热前沿）逐字不折
+  no_progress_limit: 30    # 无进展熔断：loop 连续 N 步没拿到新战果就早停(堵"够不到目标满世界乱撞烧满预算")；0=关闭
 
 # verifier Stage 2 主动探针的 safe-probe 策略（见 veritas/core/prober.py）。
 # 主动探针在 verifier 判定前，用立足点自己的访问向量发起"只有真拿下才能通过"的挑战

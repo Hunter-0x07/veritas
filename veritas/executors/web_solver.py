@@ -21,6 +21,7 @@ log = logging.getLogger("veritas.web_solver")
 
 MAX_STEPS = 120   # agentic loop 步数上限的 fallback 默认（dispatch runtime.max_steps 可覆盖）；
                   # 冷图压缩把转录成本解耦后从 60 放开，给未知深链更多探索余量
+NO_PROGRESS_DEFAULT = 30   # 无进展熔断 fallback 默认（连续 N 步无新战果早停；0=关闭）
 _ACCESS = ("external", "recon", "web_user", "web_admin", "db_read", "shell", "root", "domain_admin")
 
 SYSTEM = (
@@ -141,6 +142,9 @@ class WebSolverExecutor(Executor):
         from ..llm.compaction import DEFAULT_MAX_CHARS, DEFAULT_KEEP_RECENT
         self.compact_chars = int(getattr(runtime, "compact_chars", None) or DEFAULT_MAX_CHARS)
         self.compact_keep = int(getattr(runtime, "compact_keep", None) or DEFAULT_KEEP_RECENT)
+        # 无进展熔断阈值（连续 N 步无新战果就早停）；getattr 取不到用默认，0/None=关闭
+        np = getattr(runtime, "no_progress_limit", NO_PROGRESS_DEFAULT)
+        self.no_progress = int(NO_PROGRESS_DEFAULT if np is None else np)
         # safe-probe 策略（Stage 2 主动探针）：归一化成带行为的 ProbePolicy——
         # engine 传进来的是 config.ProbeCfg(纯数据，无 active_allowed)，这里统一转换，防类型错配。
         self.probe_policy = ProbePolicy.from_cfg(probe_policy) if probe_policy is not None else ProbePolicy()
@@ -162,6 +166,8 @@ class WebSolverExecutor(Executor):
         ]
         tools = _schemas()
         finished = False
+        last_gain_step = 0      # 最近一次拿到新战果的步；无进展熔断据此早停
+        prev_gain = 0
 
         try:
             for step in range(1, self.max_steps + 1):
@@ -190,6 +196,16 @@ class WebSolverExecutor(Executor):
                     label = "" if trusted else "[不可信目标数据]\n"
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": f"{label}{content[:5000]}"})
                 if finished:
+                    break
+                # 无进展熔断：任一新战果(立足点/凭据/loot/finding)重置计数；连续 no_progress 步无进展就早停，
+                # 堵"够不到目标满世界乱撞烧满预算"。保护初期 recon——有进展就一直续命。
+                gain = len(tr.footholds) + len(tr.credentials) + len(tr.loot) + len(tr.findings)
+                if gain > prev_gain:
+                    prev_gain = gain
+                    last_gain_step = step
+                if self.no_progress and (step - last_gain_step) >= self.no_progress:
+                    log.info("[%s] 无进展熔断：连续 %d 步无新战果，提前收手（省 token，step %d）",
+                             wid, step - last_gain_step, step)
                     break
 
             # Stage 2：verifier 判定前，引擎主动探针证成/证伪（本执行器持沙箱，职责见 core/prober.py）

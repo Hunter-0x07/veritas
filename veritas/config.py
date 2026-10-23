@@ -37,6 +37,10 @@ class RuntimeCfg:
     # 触发可临时调小 compact_chars 强制触发）。
     compact_chars: int = 200000
     compact_keep: int = 8
+    # 无进展熔断：web_solver loop 连续 no_progress_limit 步没拿到【新战果】(foothold/凭据/loot/finding)
+    # 就提前收手——堵"够不到目标就满世界乱撞烧满预算"(实测对死 DC 绕 137 步/3.1M tokens)。效果优先→
+    # 默认宽松(保护初期 recon：任一新战果都重置计数)；0=关闭。
+    no_progress_limit: int = 30
 
 
 @dataclass

@@ -146,6 +146,35 @@ Veritas v1 做成了"漏洞验证器"（确认 SQLi/XSS 三态裁决就结束）
   **为什么**：token 成本全在 `web_solver` 的 agentic loop——每步把 tool 结果塞进 `messages`、每次 `llm.chat` 重发整段历史 → 无限增长（实测单 run ~1M in tokens）。**关键洞察**（与 ARTEX 不同）：ARTEX 的 LLM 每轮看「图总览」、冷子图折成 digest 节点缩总览；veritas 的 LLM 只看自己的**转录**（攻击图在 Postgres、靠 `search_worker_traces` 按需取），故冷图压缩 = **转录压缩**。
   **已落地**：`llm/compaction.py`（纯函数 `compact_messages`）——转录超阈值（≈50K tokens）就把中段旧 round-trip 折成**确定性 digest**（每 tool_call 压成「命令→输出尾」一行 + 指向 `search_worker_traces` 恢复原文），保留 system+初始任务+最近 N 轮热前沿，折到低水位去抖。**按完整 round-trip 折叠**保 tool_call 配对合法（不留悬空 tool）；**零额外 LLM 成本**（确定性滚动）；只动转录、不动 DB 攻击图/战果。`web_solver` loop 每次 `llm.chat` 前调用。借 ARTEX coldgraph 原则（折冷/留热前沿/去抖低水位），digest 用确定性（而非 LLM 摘要，契合控成本 + 避免"谁压谁验"）。**验证**：17 确定性单测（no-op / 折叠后有界 / 结构合法 tool_call 配对 / 保前沿 / digest 滚动行+指向检索 / 再压缩合并不累积 / 60 步循环转录有界 peak<1.5×阈值）+ prober 49 零回归。**后续**：checkpoint 断点续跑、阈值 config 化、LLM 摘要式 digest（可选开关）。
 
+  ### 分级自主 / 审批门（HITL）+ scope 真接入 executor——碰真外部目标前的安全闸（✅ 已落地 2026-10-24）
+  **为什么**：引擎即将碰真·HackerOne 授权外部目标，但有个**明确安全漏洞**——`core/engine.py` 构造 solver 时
+  `build_registry("live", …)` **没传 `scope`** → web_solver 拿到 `scope=None` → 已存在的越界守卫永不触发，且
+  `ScopeCfg` 根本没有 `allows_cmd` 方法。实测（task `6661273c36a0`，goal=root）GLM 被 config.ini 里的域凭据勾引，
+  往已关机的云 DC 与 Docker 网关 `192.168.65.x` 撞了十几次——全在 scope 外、无人拦。
+  **已落地**：建 `veritas/safety/` 包（PLAN §七规划的 `scope · approval · autonomy`）。
+  - **scope 真接入**（`safety/scope.py` 纯函数 + `ScopeCfg.allows_cmd` 委托）：从命令抽【连接目标】主机/IP
+    （**所有 IPv4/IPv6 字面量一律抽**——堵实测事故的高信号；URL 只取 authority，`?redirect=http://evil.com`
+    这类 query 内嵌 URL 与 `--data`/`-H` 旗标值里的 FQDN 不抽，避免误杀开放重定向类合法请求），比对 domains +
+    CIDR：域内放行、域外拒绝、抽不到主机的本地命令放行；**单标签内网名**（容器名 `lab-edge`）无法 CIDR 校验→放行
+    不误杀横向，**多标签外部 FQDN** 未匹配→拒绝；loopback 恒放行；domains/cidrs 都空=不强制。engine 把 `cfg.scope`
+    一路传进 `build_registry`→web_solver，越界把明确提示回给 LLM + 落 `activity(gate=scope_denied)`。**prober 也受
+    scope 约束**（点名要补）：`Prober(scope=…)`，nonce 回环 / 重认证 / 重跑 DCSync / 9 类 web 探针的目标向量越界→
+    降级 INCONCLUSIVE（绝不 refuted），例外是 `_oob_poll`（查引擎自托管监听器，非目标）。
+  - **分级自主 / 审批门**（`safety/autonomy.py`）：`classify(cmd)` 把 shell 命令按破坏性/噪声分
+    benign / file_write / file_delete / destructive / broad_scan / bruteforce（噪声档 low/medium/high 与 prober
+    safe-probe 对齐复用，不另造）；`AutonomyPolicy` 的 `mode=auto` 按 `probe.authorization` 推导（lab→full_auto
+    全放行 / external→approval 破坏性需审批）。当前引擎全自动无人在环 → approval 下 `on_gated=deny`（**fail-closed
+    默认**）：破坏性/大范围扫描/在线爆破执行前拦截、回提示给 LLM 换招、落 `activity(gate=needs_approval)`、Observer
+    `conclude` 交叉核 flag；`on_gated=allow` 给受监督 run 的 fail-open 选项（放行+留痕）。审批点=executor 执行命令处；
+    真正的交互式【暂停→operator 逐条批准→恢复】UI 留后续。纪律：sandbox 内 scratch 写 / 窄扫描 / 单文件 rm / 读命令
+    不误杀（只拦明确破坏性/大范围/爆破）。报告加「安全闸」小节列出被拦/放行动作供人工复核。
+  **验证**：`tests/safety/` 三套确定性单测（纯 `.venv/bin/python`，无 pytest/网络依赖）全绿——`test_scope`（36 例：越界
+  IP/Docker 网关/多标签外部 FQDN/云元数据端点拒绝，内网横向/子域/单标签/本地命令/loopback 放行，payload 内嵌 URL 不误杀，
+  空 scope 放行）、`test_autonomy`（classify 各类 + fail-closed/fail-open/full_auto 裁决 + mode 推导）、`test_wiring`
+  （async + 假 sandbox/board 不调 GLM：越界命令被拦且沙箱从未被调用、合法横向放行、破坏性按策略放/拦、prober 越界探针
+  降级且不触沙箱）。**prober 对 scope=None 零行为变化**（现有 49 探针单测不传 scope→守卫不触发）。live（交用户终端跑·烧
+  token）复验 GLM 越界命令落 `gate=scope_denied`、合法内网不误杀待补。血缘：ARTEX 分级自主/审批门。
+
   ### 证明模型（proof-of-effect verifier）——面向未知靶场的结论可信
   **为什么**：M4 的 `verifier.py` 验的是「solver 自述 evidence ↔ 命令输出的字符串重叠」——声称和证据都由 LLM 挑，本质是**验"报告"不验"世界"**。后果：调 prompt 让模型把 evidence 写成 verifier 想要的样子就能变绿 = **过拟合某个模型的输出格式**，再跑一次也只证明"模型输出符合预期"，而非"攻击真发生"。要挖 HackerOne / 上未知靶场（项目定位第一性），必须把验证锚到**世界**。
   **原则**：verdict 由系统从【已记录的真实世界底物】(`activity` 的 exec/rc/out、`http_flows`/MITM) 按**每个访问级别的"举证义务"**自行重新推导；solver 的 evidence/location 只当线索/锚点。三态收敛（借 strix 的 closure discipline）：`verified`（义务达成）/ `refuted`（世界里有明确反证，保守触发）/ `unproven`（open_proof_gap：不计入进展，但记录上报、绝不冒充成功也不偷偷丢）。证据强度阶梯：用成功的凭据 > 效果痕迹(proof-of-effect) > 高熵密文在真实输出里+凭据佐证 > location 真跑过 > 字符串重叠(最弱)。

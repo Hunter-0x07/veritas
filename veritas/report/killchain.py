@@ -126,8 +126,21 @@ async def generate(board, task_id: str, target: str, goal: str,
     else:
         lines.append("- （无）")
 
-    # 真实复现命令：沙箱里跑过的 shell 命令（live 才有）
-    execs = [a for a in acts if (a["content"] or {}).get("exec")]
+    # 安全闸：scope 越界拦截 + 审批门（分级自主）记录——让人工复核一眼看到拦了/放了什么
+    gated = [a for a in acts if (a["content"] or {}).get("gate")]
+    if gated:
+        lines += ["", "## 安全闸（scope + 分级自主/审批门）", ""]
+        _glabel = {"scope_denied": "🚫 scope 越界·已拦截",
+                   "needs_approval": "⛔ 需人工审批·已拦截（approval·fail-closed）",
+                   "would_require_approval": "⚠️ 本应审批·已放行留痕（fail-open）"}
+        for a in gated:
+            c = a["content"]
+            tag = _glabel.get(c.get("gate", ""), c.get("gate", ""))
+            extra = f"（{c.get('category')}/{c.get('noise')}）" if c.get("category") else ""
+            lines.append(f"- [{a['worker_id']}] {tag}{extra}: `{(c.get('exec') or '')[:160]}`")
+
+    # 真实复现命令：沙箱里跑过的 shell 命令（live 才有；排除被安全闸拦下未执行的）
+    execs = [a for a in acts if (a["content"] or {}).get("exec") and not (a["content"] or {}).get("gate")]
     if execs:
         lines += ["", "## 复现命令（沙箱实跑，按序）", "", "```bash"]
         for a in execs:

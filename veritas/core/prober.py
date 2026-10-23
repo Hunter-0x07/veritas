@@ -164,16 +164,21 @@ def _parse_http(out: str) -> tuple[int, dict, str]:
 
 
 class Prober:
-    def __init__(self, sandbox, policy: ProbePolicy, llm=None, oob=None):
+    def __init__(self, sandbox, policy: ProbePolicy, llm=None, oob=None, scope=None):
         self.sb = sandbox
         self.policy = policy
         self.llm = llm
+        self.scope = scope                           # 授权边界：主动探针命令也受 scope 约束（越界→不主动探）
         if oob is None:
             from ..runtime.oob import NoopOOB   # 延迟导入避免 core↔runtime 顶层环
             oob = NoopOOB()
         self.oob = oob                               # 带外交互（SSRF/盲注用，Cut 2b 接真监听）
         self._spent = 0
         self._cache: dict[tuple, ProbeResult] = {}   # (method,target) 去重，避免对同一目标重复重活
+
+    def _scope_denies(self, target: str) -> bool:
+        """目标向量是否越授权边界（引擎的主动探针也不许打 scope 外主机）。"""
+        return self.scope is not None and bool(target) and not self.scope.allows_cmd(target)
 
     # ---------- 底层：执行一条探针命令（计入预算） ----------
     async def _run(self, cmd: str, timeout: float = 90) -> tuple[int, str]:
@@ -216,6 +221,9 @@ class Prober:
         if not template:
             return ProbeResult(INCONCLUSIVE, "nonce_echo", tier,
                                detail="无 replay/可复现访问向量 → 交被动验证兜底", trust="none")
+        if self._scope_denies(template):
+            return ProbeResult(INCONCLUSIVE, "nonce_echo", NOISE_PASSIVE,
+                               detail="立足点访问向量越授权边界（scope）→ 不主动探，交被动兜底", trust="none")
         if not self.policy.active_allowed(tier) or not self._budget_left():
             return ProbeResult(INCONCLUSIVE, "nonce_echo", NOISE_PASSIVE,
                                detail="策略/预算不允许主动探针 → 降级被动", trust="none")
@@ -249,6 +257,9 @@ class Prober:
         """domain_admin：授权靶场重跑 DCSync 坐实（认 RID-500/krbtgt）；外部降级为被动+PoC。"""
         tier = NOISE_HIGH
         target = self._dc_target(foothold, traces)
+        if self._scope_denies(target):
+            return ProbeResult(INCONCLUSIVE, "re_dcsync", NOISE_PASSIVE,
+                               detail="DC 目标越授权边界（scope）→ 不主动重跑 DCSync，交被动兜底", trust="none")
         if not self.policy.active_allowed(tier):
             # 外部：不主动重跑 DCSync（太吵），降级为被动 proof-of-effect + 可复现 PoC
             return ProbeResult(INCONCLUSIVE, "downgraded", NOISE_PASSIVE,
@@ -286,8 +297,11 @@ class Prober:
         return res
 
     # ========== web 漏洞确定性探针（Stage 3 Cut 2a；经沙箱 curl → 自动 MITM 留痕 + scope）==========
-    def _web_guard(self, method: str) -> "ProbeResult | None":
-        """web 探针统一门禁：noise=low（幂等 HTTP 读式，外部授权目标也放行），受预算约束。"""
+    def _web_guard(self, method: str, url: str = "") -> "ProbeResult | None":
+        """web 探针统一门禁：scope 越界 + noise=low（幂等 HTTP 读式，外部授权目标也放行）+ 预算。"""
+        if self._scope_denies(url):
+            return ProbeResult(INCONCLUSIVE, method, NOISE_PASSIVE,
+                               detail="web 探针目标越授权边界（scope）→ 不主动探，交兜底", trust="none")
         if not self.policy.active_allowed(NOISE_LOW):
             return ProbeResult(INCONCLUSIVE, method, NOISE_PASSIVE,
                                detail="策略不允许主动探针 → 降级（交 PoC+LLM-judge）", trust="none")
@@ -327,7 +341,7 @@ class Prober:
 
     async def _probe_ssti(self, foothold: dict, replay: dict) -> ProbeResult:
         """SSTI：注入引擎自选两数之积——模板【真求值】才会出现乘积；表达式字面原样回显=未求值→反证。"""
-        guard = self._web_guard("ssti")
+        guard = self._web_guard("ssti", replay.get("url", ""))
         if guard:
             return guard
         a, b = secrets.randbelow(500) + 500, secrets.randbelow(500) + 500
@@ -357,7 +371,7 @@ class Prober:
     async def _probe_sqli(self, foothold: dict, replay: dict) -> ProbeResult:
         """SQLi：借 v1 三 oracle（报错型 / 认证绕过 / 布尔差分）+ union 引擎标记回环。
         纪律：回显 payload 串不算证据；验不出一律 inconclusive（绝不写反证）。"""
-        guard = self._web_guard("sqli")
+        guard = self._web_guard("sqli", replay.get("url", ""))
         if guard:
             return guard
         base = str((replay.get("base_params") or {}).get(replay.get("param", ""), "1"))
@@ -415,7 +429,7 @@ class Prober:
 
     async def _probe_lfi(self, foothold: dict, replay: dict) -> ProbeResult:
         """LFI/路径遍历：读到引擎可预测内容（/etc/passwd 的 root:...:0:0: 结构）才算证成。"""
-        guard = self._web_guard("lfi")
+        guard = self._web_guard("lfi", replay.get("url", ""))
         if guard:
             return guard
         last = ("", "")
@@ -436,7 +450,7 @@ class Prober:
 
     async def _probe_open_redirect(self, foothold: dict, replay: dict) -> ProbeResult:
         """开放重定向：3xx Location 恰为引擎自选唯一外部 URL → 参数真控重定向；指向自身 → 反证。"""
-        guard = self._web_guard("open_redirect")
+        guard = self._web_guard("open_redirect", replay.get("url", ""))
         if guard:
             return guard
         token = _new_nonce()
@@ -475,7 +489,7 @@ class Prober:
             return ProbeResult(INCONCLUSIVE, "ssrf", NOISE_PASSIVE,
                                detail="未配置 OOB canary（probe.oob_url）→ 无法确定性验证 SSRF，交兜底/LLM-judge",
                                trust="none")
-        guard = self._web_guard("ssrf")
+        guard = self._web_guard("ssrf", replay.get("url", ""))
         if guard:
             return guard
         token, canary = await self.oob.new_token()
@@ -494,7 +508,7 @@ class Prober:
             return ProbeResult(INCONCLUSIVE, "xxe", NOISE_PASSIVE,
                                detail="未配置 OOB canary（probe.oob_url）→ 无法确定性验证 XXE，交兜底",
                                trust="none")
-        guard = self._web_guard("xxe")
+        guard = self._web_guard("xxe", replay.get("url", ""))
         if guard:
             return guard
         token, canary = await self.oob.new_token()
@@ -518,7 +532,7 @@ class Prober:
         """XSS 执行级（借归档 v1）：headless 浏览器加载注入 URL，payload【真执行】才会把引擎 token
         写进顶层 window.__VERITAS 或弹含 token 的 dialog——而非"响应里出现 payload 字符串"(回显≠执行)。
         注：用引擎进程内 Playwright（非沙箱），目标须【引擎主机可达】；playwright/chromium 未就绪→诚实降级。"""
-        guard = self._web_guard("xss")
+        guard = self._web_guard("xss", replay.get("url", "") or replay.get("url_template", ""))
         if guard:
             return guard
         tmpl = replay.get("url_template") or ""
@@ -583,7 +597,7 @@ class Prober:
     async def _probe_authn(self, foothold: dict, replay: dict) -> ProbeResult:
         """web_user/web_admin：带【获得的会话】访问受保护资源，拿到【匿名基线拿不到】的东西 → 会话真授予访问。
         基线差分（经沙箱 curl）：带会话 2xx/授权标记 vs 匿名 401/403/跳登录。无差异 → inconclusive。"""
-        guard = self._web_guard("authn")
+        guard = self._web_guard("authn", replay.get("url", ""))
         if guard:
             return guard
         url = replay.get("url", "")
@@ -620,7 +634,7 @@ class Prober:
         """IDOR/越权对象访问：用【自己的会话】去读【他人对象】，若拿到只属于他人的唯一标记 → 越权确证。
         other_marker 由引擎/solver（掌握另一账号 B）给出（B 对象里独有的数据）；经沙箱 curl。
         前提：需知道'他人对象的唯一标记'——这正是未知外部目标上难点，故靠双账号配方（靶场/已控两账号）。"""
-        guard = self._web_guard("idor")
+        guard = self._web_guard("idor", replay.get("url", ""))
         if guard:
             return guard
         url = replay.get("url", "")
@@ -662,6 +676,9 @@ class Prober:
         if not target:
             return ProbeResult(INCONCLUSIVE, "reauth", tier,
                                detail="无法定位认证目标（无 replay.target / 记录里找不到）→ 交被动兜底", trust="none")
+        if self._scope_denies(target):
+            return ProbeResult(INCONCLUSIVE, "reauth", NOISE_PASSIVE,
+                               detail="认证目标越授权边界（scope）→ 不主动重认证，交被动兜底", trust="none")
         key = ("reauth", target, user, secret)
         if key in self._cache:
             return self._cache[key]

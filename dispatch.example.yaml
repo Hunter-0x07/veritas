@@ -35,7 +35,21 @@ probe:
   budget: 8          # 本次 run 的主动探针执行预算（防对目标连续重活/限速/告警）
   llm_judge: false   # 外部降级路径是否启用 LLM-judge 辅助评级（低信任档，绝不单独抬成 verified）
 
-# 授权边界（含内网网段，横向目标也须在 scope）
+# 授权边界（安全闸·见 veritas/safety/scope.py）：执行前从命令抽【连接目标】主机/IP，比对
+# domains + CIDR——域内放行、域外拒绝、抽不到主机的本地命令放行。**内网横向目标也须在 scope**
+# （内网走 cidrs；单标签容器名如 lab-edge 无法 CIDR 校验，默认放行不误杀）。domains/cidrs 都空
+# = 不强制（放行一切）。第一性：真实目标是 HackerOne 这类授权外部目标，scope 是碰真目标前的硬边界。
 scope:
   domains: ["localhost", "127.0.0.1"]
   cidrs: ["127.0.0.0/8", "10.0.0.0/8"]
+  # 授权外部目标：把 bug bounty 范围的主机/网段列进来（用 /32 精确授权单台），例：
+  # domains: ["app.example.com", "api.example.com"]
+  # cidrs: ["198.51.100.0/24"]   # ← 用真实授权网段；仓库文档一律用 RFC5737 脱敏
+
+# 分级自主 / 审批门（HITL·见 veritas/safety/autonomy.py）：破坏性/高噪声动作（删/写系统文件、
+# 大范围扫描 nmap -p-/masscan、在线爆破 hydra/medusa）在 approval 模式下要人工审批。与 safe-probe
+# 的授权档对齐：mode=auto 时按 probe.authorization 推导（lab→full_auto 全放行 / external→approval）。
+autonomy:
+  mode: "auto"        # auto（按 probe.authorization 推导）| full_auto（全放行）| approval（破坏性需审批）
+  # 当前引擎全自动无人在环：approval 下遇需审批动作——
+  on_gated: "deny"    # deny（拦截+记录·fail-closed·默认·安全闸）| allow（放行+记录·fail-open·仅遥测）

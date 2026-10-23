@@ -66,12 +66,22 @@ class Observer:
                 await self._flag(task_id, f"llm_judged:{f['label']}",
                                  f"{f['label']}（{f['access_level']}）无确定性举证义务、仅 LLM-judge 低信任评级："
                                  f"{(judge.get('detail') or '')[:160]} —— 需人工复核（只确定性证据计入进展）")
+        # 安全闸交叉核：有破坏性/高噪声动作因审批门被拦（approval·fail-closed）→ flag 供人工复核
+        acts = await self.board.activity_log(task_id)
+        na = [a for a in acts if (a["content"] or {}).get("gate") == "needs_approval"]
+        if na:
+            cats = ", ".join(sorted({(a["content"] or {}).get("category", "") for a in na if (a["content"] or {}).get("category")}))
+            await self._flag(task_id, "needs_approval",
+                             f"{len(na)} 条破坏性/高噪声动作因审批门被拦（{cats}）——"
+                             "approval 模式无人在环已 fail-closed；如确需放行请人工复核后改 autonomy.on_gated")
 
     async def _detect_ruts(self, task_id: str) -> None:
         counts: dict[tuple, int] = {}
         for r in await self.board.activity_log(task_id):
             c = r["content"] or {}
             if "probe" in c:          # 主动探针（含反证，rc=1 正常）不是鬼打墙，跳过
+                continue
+            if "gate" in c:           # 安全闸拦截记录（scope/审批门，rc=1）不是鬼打墙，跳过
                 continue
             if "exec" in c and c.get("rc") not in (0, None):
                 key = (r["worker_id"], c["exec"])

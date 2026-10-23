@@ -132,10 +132,11 @@ class WebSolverExecutor(Executor):
     kinds = ("initial_access", "web_exploit")
 
     def __init__(self, llm: LLMClient, sandbox: Sandbox, scope=None, probe_policy=None, oob=None,
-                 runtime=None):
+                 runtime=None, autonomy=None):
         self.llm = llm
         self.sandbox = sandbox
         self.scope = scope
+        self.autonomy = autonomy  # 分级自主/审批门策略（None→不门控，向后兼容；engine live 必传）
         self.oob = oob          # OOB canary provider（SSRF/XXE 用；None→prober 内用 NoopOOB）
         # agentic loop 步数上限 + 冷图压缩参数（可由 dispatch runtime 调；冷图压缩让步数不再被成本卡住）
         self.max_steps = int(getattr(runtime, "max_steps", None) or MAX_STEPS)
@@ -223,7 +224,7 @@ class WebSolverExecutor(Executor):
         结果写进各自 props['probe']（供 solver 传给 verifier），探针命令也落 activity（可复现 + 世界底物）。"""
         if not self.probe_policy.enabled:
             return
-        prober = Prober(self.sandbox, self.probe_policy, llm=self.llm, oob=self.oob)
+        prober = Prober(self.sandbox, self.probe_policy, llm=self.llm, oob=self.oob, scope=self.scope)
         traces = await board.exec_traces(task_id)
         proven_creds: list[dict] = []
         for cr in tr.credentials:
@@ -289,11 +290,33 @@ class WebSolverExecutor(Executor):
                          f"  resp_body={(fl['resp_body'] or '')[:600]}")
         return "\n".join(parts)
 
+    async def _safety_gate(self, cmd: str, board, task_id: str, wid: str) -> tuple[bool, str]:
+        """执行点统一安全门：scope 越界 + 审批门。放行→(True,'')；拦截→(False, 给 LLM 的提示)
+        并把被拦动作落 activity（gate 标记，供报告「安全闸」小节与 Observer 交叉核）。"""
+        if self.scope is not None and not self.scope.allows_cmd(cmd):
+            await board.write_activity(task_id, None, wid, 0,
+                {"exec": cmd[:300], "rc": 1, "out": "[scope] 目标越界，拒绝执行", "gate": "scope_denied"})
+            return False, ("拒绝：命令/请求目标疑似越界（scope 授权边界校验）。"
+                           "只打授权范围内的主机与网段，不要碰 scope 外的主机/IP。")
+        if self.autonomy is not None:
+            dec = self.autonomy.gate_command(cmd)
+            if dec.record:
+                await board.write_activity(task_id, None, wid, 0,
+                    {"exec": cmd[:300], "rc": (0 if dec.allow else 1),
+                     "out": f"[autonomy] {dec.gate}: {dec.category}/{dec.noise} {dec.reason}",
+                     "gate": dec.gate, "category": dec.category, "noise": dec.noise})
+            if not dec.allow:
+                return False, (f"拒绝：该动作被判为破坏性/高噪声（{dec.category}：{dec.reason}）。"
+                               "当前策略为 approval（外部授权目标·无人在环），此类动作需人工审批、已拦截。"
+                               "请改用不破坏数据、不越界、低噪声的方式推进。")
+        return True, ""
+
     async def _handle(self, name, args, tr: Transition, task_id, board, wid="ws") -> tuple[str, bool]:
         if name == "sandbox_exec":
             cmd = args.get("command", "")
-            if self.scope is not None and not self.scope.allows_cmd(cmd):
-                return "拒绝：命令目标疑似越界（scope 校验）", True
+            ok, deny = await self._safety_gate(cmd, board, task_id, wid)
+            if not ok:
+                return deny, True
             rc, out = await self.sandbox.exec(cmd, timeout=180)
             # 记录命令 + 输出片段，供 search_worker_traces 跨 worker 检索
             await board.write_activity(task_id, None, wid, 0,
@@ -307,8 +330,9 @@ class WebSolverExecutor(Executor):
                 cmd += " -H " + shlex.quote(f"{k}: {v}")
             if args.get("body"):
                 cmd += " --data " + shlex.quote(str(args["body"]))
-            if self.scope is not None and not self.scope.allows_cmd(cmd):
-                return "拒绝：请求目标疑似越界（scope 校验）", True
+            ok, deny = await self._safety_gate(cmd, board, task_id, wid)
+            if not ok:
+                return deny, True
             rc, out = await self.sandbox.exec(cmd, timeout=60)  # 经 env 代理，自动留痕
             await board.write_activity(task_id, None, wid, 0,
                                        {"exec": cmd[:300], "rc": rc, "out": (out or "")[:400]})

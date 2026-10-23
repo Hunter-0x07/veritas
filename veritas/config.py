@@ -12,6 +12,24 @@ class ScopeCfg:
     domains: list[str] = field(default_factory=list)
     cidrs: list[str] = field(default_factory=list)
 
+    def allows_cmd(self, cmd: str) -> bool:
+        """命令是否只触及授权范围内主机（供 executor / prober 的越界守卫调用）。
+        domains 与 cidrs 都空 = 未配置 scope → 不强制（返回 True，避免对没写 scope 的 run 回归；
+        protection 靠配置开启，dispatch 示例已含 scope）。判定逻辑见 safety/scope.py。"""
+        if not self.domains and not self.cidrs:
+            return True
+        from .safety import scope as _scope
+        return _scope.allows(cmd, self.domains, self.cidrs)
+
+
+@dataclass
+class AutonomyCfg:
+    """分级自主 / 审批门（HITL）策略。见 safety/autonomy.py。"""
+    # auto=按 probe.authorization 推导(lab→full_auto / external→approval) | full_auto | approval
+    mode: str = "auto"
+    # approval 模式下被判需审批的破坏性/高噪声动作：deny(拦截+记录·fail-closed 默认) | allow(放行+记录)
+    on_gated: str = "deny"
+
 
 @dataclass
 class LLMCfg:
@@ -66,6 +84,7 @@ class Config:
     runtime: RuntimeCfg
     scope: ScopeCfg
     probe: ProbeCfg
+    autonomy: AutonomyCfg = field(default_factory=AutonomyCfg)
 
     @staticmethod
     def load(path: str) -> "Config":
@@ -86,4 +105,6 @@ class Config:
             scope=ScopeCfg(**{k: v for k, v in raw.get("scope", {}).items() if k in {"domains", "cidrs"}}),
             probe=ProbeCfg(**{k: v for k, v in raw.get("probe", {}).items()
                               if k in ProbeCfg.__annotations__}),
+            autonomy=AutonomyCfg(**{k: v for k, v in raw.get("autonomy", {}).items()
+                                    if k in AutonomyCfg.__annotations__}),
         )

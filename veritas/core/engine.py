@@ -56,14 +56,22 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
         # safe-probe 策略（Stage 2 主动探针）：executor 持沙箱在 verifier 判定前主动证成/证伪。
         # OOB canary（Stage 3 Cut 2b）：配了 probe.oob_url 用 HttpOOB，否则 NoopOOB（SSRF/XXE 判 inconclusive）。
         from ..runtime.oob import HttpOOB, NoopOOB
+        from ..safety.autonomy import AutonomyPolicy
         oob = HttpOOB(cfg.probe.oob_url) if getattr(cfg.probe, "oob_url", None) else NoopOOB()
+        # 安全闸：scope 授权边界 + 分级自主/审批门（approval 模式对破坏性/高噪声动作 fail-closed）。
+        autonomy = AutonomyPolicy.from_cfg(getattr(cfg, "autonomy", None), cfg.probe)
         solvers = [Solver(f"s{i}", board,
-                          build_registry("live", llm, sandboxes[i], probe_policy=cfg.probe, oob=oob,
-                                         runtime=cfg.runtime), verifier)
+                          build_registry("live", llm, sandboxes[i], scope=cfg.scope,
+                                         probe_policy=cfg.probe, oob=oob, runtime=cfg.runtime,
+                                         autonomy=autonomy), verifier)
                    for i in range(nworkers)]
         log.info("safe-probe 策略：authorization=%s · budget=%d · llm_judge=%s · oob=%s",
                  cfg.probe.authorization, cfg.probe.budget, cfg.probe.llm_judge,
                  "on" if getattr(oob, "available", False) else "off")
+        _scope_on = bool(cfg.scope.domains or cfg.scope.cidrs)
+        log.info("安全闸：scope=%s（域 %d / 网段 %d）· autonomy mode=%s on_gated=%s",
+                 "on" if _scope_on else "off（未配置→不强制）",
+                 len(cfg.scope.domains), len(cfg.scope.cidrs), autonomy.mode, autonomy.on_gated)
     else:
         solvers = [Solver(f"s{i}", board, build_registry("mock"), verifier)
                    for i in range(nworkers)]

@@ -35,9 +35,26 @@ _VULN_KEYWORDS = {
 }
 
 
+_CJK = re.compile(r"[一-鿿]")
+
+
+def _kw_regex(kw: str):
+    """给关键词编译匹配正则：CJK 用子串；ASCII 用【词边界】防误命中（'rce' 不吃 'source'、
+    'ssh' 不吃 'sshd'）；'… inj' 前缀型只用起始边界（'command inj' 仍能命中 'command injection'）。"""
+    if _CJK.search(kw):
+        return re.compile(re.escape(kw))
+    body = re.escape(kw)
+    if kw.endswith(" inj"):
+        return re.compile(r"\b" + body, re.I)
+    return re.compile(r"\b" + body + r"\b", re.I)
+
+
+_VULN_RX = [(_kw_regex(kw), tag) for kw, tag in _VULN_KEYWORDS.items()]
+
+
 def _norm_vulns(text: str) -> list[str]:
-    t = (text or "").lower()
-    return sorted({tag for kw, tag in _VULN_KEYWORDS.items() if kw in t})
+    t = text or ""
+    return sorted({tag for rx, tag in _VULN_RX if rx.search(t)})
 
 
 def _host_tag(target: str) -> str:
@@ -50,14 +67,18 @@ def _host_tag(target: str) -> str:
     return f"app:{h.lower()}" if h else ""
 
 
-def _approach(replay, access_level: str) -> str:
-    """从 replay 配方蒸馏【通用动作描述】——脱敏：不保留原始命令（可能含域口令/hash），只留手法骨架。"""
+def _approach(replay, access_level: str, label: str = "") -> str:
+    """从 replay 配方蒸馏【通用动作描述】——脱敏：不保留原始命令（可能含域口令/hash），只留手法骨架。
+    command_template 既可能是 web 命令注入、也可能是 SSH 横向 pivot（都含 {CMD}），按 label 区分。"""
     r = replay if isinstance(replay, dict) else {}
     pt = r.get("probe_type")
     if pt:
         inj = r.get("injection") or "query"
         return f"web/{pt}（注入位置 {inj}）"
+    low = (label or "").lower()
     if r.get("command_template"):
+        if "ssh" in low or "横向" in (label or "") or "pivot" in low:
+            return "SSH 横向 pivot（凭据复用到内网主机）"
         return "命令执行回环（RCE / 命令注入）"
     if r.get("verify_command"):
         return "DCSync 抓域 hash（域凭据路径）"
@@ -92,7 +113,7 @@ def distill_strategy(target: str, footholds, findings, activity=None) -> "dict |
         props = f.get("props") or {}
         vuln = find_by_fid.get(f.get("id")) or (_norm_vulns(label) or [""])[0]
         steps.append({"access_level": access, "label": label, "vuln_type": vuln,
-                      "approach": _approach(props.get("replay"), access)})
+                      "approach": _approach(props.get("replay"), access, label)})
         tags.add(access)
         if vuln:
             tags.add(vuln)

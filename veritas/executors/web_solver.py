@@ -306,9 +306,11 @@ class WebSolverExecutor(Executor):
             assets = await board.assets(task_id)
             findings = await board.findings(task_id)
             tags = _mem.fingerprint_tags(target, assets, findings)
+            if not tags:
+                return ""   # 无指纹信号（如全新目标 t=0）→ 不乱注入；solver 可中途用 recall_strategy
             k = int(getattr(self.memory, "max_hints", 3))
-            rows = await board.search_strategies(tags=tags, query=(opp.get("kind") or ""),
-                                                 limit=k, exclude_task=task_id)
+            # 启动检索只按【指纹标签重叠】（opp.kind 永远不在 strategy 文本里，当查询词无效故不传）
+            rows = await board.search_strategies(tags=tags, limit=k, exclude_task=task_id)
             block = _mem.format_hints(rows, k)
             if block:
                 log.info("[%s] 跨 run 记忆：注入 %d 条历史策略提示", opp.get("claimed_by") or "ws", len(rows))

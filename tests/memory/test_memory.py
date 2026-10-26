@@ -65,6 +65,24 @@ check("提示块有'仅供参考'纪律", "仅供参考" in block, True)
 check("提示块不泄 secret", "PASSWORD" not in block, True)
 check("空输入 → 空串", m.format_hints([], 3), "")
 
+print("[code-review 修复①：_norm_vulns 词边界，不吃子串误命中]")
+check("'web source leak' 不误标 rce", "rce" not in m._norm_vulns("web source leak"), True)
+check("'resource exhaustion' 不误标 rce", "rce" not in m._norm_vulns("resource exhaustion"), True)
+check("'sshd service' 不误标 ssh-lateral", "ssh-lateral" not in m._norm_vulns("sshd service"), True)
+check("'got RCE shell' 仍标 rce（独立词）", "rce" in m._norm_vulns("got RCE shell"), True)
+check("'command injection /ping' 仍标 command-injection（前缀）", "command-injection" in m._norm_vulns("command injection /ping"), True)
+check("'union select 1' 标 sqli", "sqli" in m._norm_vulns("union select 1"), True)
+check("'ssh 横向' 标 ssh-lateral+lateral-pivot",
+      {"ssh-lateral", "lateral-pivot"} <= set(m._norm_vulns("ssh 横向")), True)
+
+print("[code-review 修复③：_approach 按 label 区分 SSH pivot]")
+check("ssh 横向 pivot 不误标 RCE",
+      m._approach({"command_template": "sshpass ... {CMD}"}, "shell", "ssh 横向: deploy@internal"),
+      "SSH 横向 pivot（凭据复用到内网主机）")
+check("web 命令注入仍标 RCE",
+      m._approach({"command_template": "curl ...{CMD}"}, "root", "root@edge 命令注入"),
+      "命令执行回环（RCE / 命令注入）")
+
 
 class StubBoard:
     def __init__(self, foots, finds):

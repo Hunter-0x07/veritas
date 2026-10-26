@@ -8,10 +8,14 @@ import sys, os, asyncio
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from veritas.config import ScopeCfg
+from veritas.safety import scope as _scope
 from veritas.safety.autonomy import AutonomyPolicy
 from veritas.executors.web_solver import WebSolverExecutor
 from veritas.executors.base import Transition
 from veritas.core.prober import Prober, ProbePolicy, INCONCLUSIVE, REFUTED
+
+# 单标签容器名在 engine 侧通常解析不到 → 放行；此处预置为确定性（不依赖真实解析器）
+_scope._dns_cache.update({"lab-edge": []})
 
 _fail = 0
 def check(name, got, want):

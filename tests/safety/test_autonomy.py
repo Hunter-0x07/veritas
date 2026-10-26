@@ -45,6 +45,27 @@ CASES = {
 for cmd, want in CASES.items():
     check(f"classify {cmd[:42]}", classify(cmd).category, want)
 
+print("[classify] 按动词位置判（code-review 修复：不扫引号/数据/参数里的关键词）")
+FIX = {
+    # 关键词出现在【参数/数据/引号】里（非命令动词）→ 不误判（benign）
+    "grep passwd /etc/shadow": BENIGN,          # finding 1：grep 是动词，passwd 是参数
+    "grep -r passwd /etc/": BENIGN,
+    "cat dump.txt | grep passwd": BENIGN,       # 管道后段动词是 grep
+    "echo shutdown now": BENIGN,                # finding 2：echo 是动词
+    "echo 'please reboot the box'": BENIGN,
+    "curl http://t/ --data 'note=shutdown'": BENIGN,   # finding 3 同源：数据非 shell
+    "curl http://t/ --data 'x=rm -rf /'": BENIGN,
+    "cat /etc/passwd": BENIGN,                  # 读文件不是改口令
+    # 真破坏性仍要抓到（含包装/嵌套，防漏判）
+    "sudo rm -rf /etc": DESTRUCTIVE,            # 剥 sudo 后动词 rm + 系统路径
+    "sudo -u www rm -rf /var/log": DESTRUCTIVE, # sudo 带值选项也要剥对
+    "timeout 30 nmap -p- 10.0.0.5": BROAD_SCAN, # 剥 timeout + 数值
+    "sh -c 'rm -rf /'": DESTRUCTIVE,            # sh -c 递归内层
+    "bash -c 'grep passwd x'": BENIGN,          # sh -c 递归：内层也是 benign
+}
+for cmd, want in FIX.items():
+    check(f"fix {cmd[:44]}", classify(cmd).category, want)
+
 print("[AutonomyPolicy.gate] approval·fail-closed（默认）")
 ap = AutonomyPolicy(mode="approval", on_gated="deny")
 d = ap.gate_command("rm -rf /var/www")

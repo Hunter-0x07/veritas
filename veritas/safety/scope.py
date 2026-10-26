@@ -22,6 +22,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import shlex
+import socket
 from urllib.parse import urlsplit
 
 # 其后紧跟的值是发给目标的数据/请求头（payload），不是连接目标——其中的 FQDN 不抽。
@@ -49,6 +50,24 @@ def _valid_ip(s: str):
         return ipaddress.ip_address(s)
     except ValueError:
         return None
+
+
+_dns_cache: dict = {}
+
+
+def _resolve(name: str) -> list[str]:
+    """best-effort 解析主机名为 IP 列表（进程内缓存）。解析不到返回 []。
+    用于收紧【单标签】主机名：曾无条件放行（=绕过面），现解析成 IP 再比对 cidrs。
+    注意：在 engine 进程里跑（非沙箱）——沙箱内网容器名（lab-edge 等）在此通常解析不到 → []，
+    故仍放行不误杀横向；只有真能解析到【scope 外 IP】的单标签名才被拦。"""
+    if name in _dns_cache:
+        return _dns_cache[name]
+    try:
+        _, _, ips = socket.gethostbyname_ex(name)
+    except (OSError, UnicodeError):
+        ips = []
+    _dns_cache[name] = ips
+    return ips
 
 
 def _url_host(u: str) -> str:
@@ -131,9 +150,14 @@ def host_in_scope(host: str, domains, cidrs) -> bool:
     for d in dset:
         if d and h.endswith("." + d):
             return True
-    # 单标签未匹配（内网容器名，无法 CIDR 校验）→ 放行，不误杀横向
+    # 单标签未匹配：曾无条件放行（=绕过面——单标签别名可解析到 scope 外主机）。收紧：
+    # 解析成 IP 再按 cidrs/domains 判——解析到的 IP 任一越界即拒；解析不到（如沙箱内网容器名
+    # 在 engine 侧不可解析）才放行，不误杀横向。
     if "." not in h:
-        return True
+        ips = _resolve(h)
+        if not ips:
+            return True
+        return all(host_in_scope(ip, domains, cidrs) for ip in ips)
     # 多标签 FQDN 未匹配任一授权域 → 拒绝
     return False
 

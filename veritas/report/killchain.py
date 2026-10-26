@@ -1,11 +1,14 @@
 """Kill chain 报告：攻击路径（立足点推进，含并行分支）+ 每跳 PoC + 舰队执行归属 + 真实复现命令。"""
 from __future__ import annotations
 
+import logging
 import pathlib
 import shlex
 import time
 
 from ..core.state import meets_goal, rank
+
+log = logging.getLogger("veritas.report")
 
 _SKIP_HDR = {"host", "content-length", "proxy-connection", "connection"}
 
@@ -190,4 +193,16 @@ async def generate(board, task_id: str, target: str, goal: str,
               "全链路 HTTP 经记录型 MITM 代理留痕，每跳请求可 curl 复现。"]
 
     (run_dir / "killchain.md").write_text("\n".join(lines), encoding="utf-8")
+
+    # 可视化回放（自包含 HTML，与 .md 同源真实底物）——每次 run 顺带产出，供分享/demo/复盘。
+    # 可视化失败绝不拖垮主报告（.md 已落盘）。
+    try:
+        from . import killchain_viz
+        payload = killchain_viz.build_payload(task_id, target, goal, max_acc, mode,
+                                              footholds, edges, creds, loots, findings, acts, flows)
+        html_path = killchain_viz.export_html(payload, str(run_dir / "killchain.html"))
+        log.info("kill chain 可视化回放已生成: %s", html_path)
+    except Exception as e:  # noqa: BLE001
+        log.warning("kill chain 可视化生成失败（不影响 .md 报告）: %s", e)
+
     return run_dir / "killchain.md", reached, max_acc

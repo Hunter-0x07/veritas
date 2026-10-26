@@ -23,14 +23,6 @@ DOM = ["veritas.lab", "lab-dc.veritas.lab", "localhost", "127.0.0.1"]
 CIDR = ["127.0.0.0/8", "172.16.0.0/12", "172.30.0.0/16", "203.0.113.10/32"]
 sc = ScopeCfg(domains=DOM, cidrs=CIDR)
 
-# 预置 DNS 缓存，让【单标签收紧】确定性可测（不依赖真实解析器）：
-scope._dns_cache.update({
-    "lab-edge": [],                  # 沙箱内网容器名：engine 侧解析不到 → 放行（不误杀横向）
-    "lab-internal": [],
-    "evilalias": ["203.0.113.9"],    # 单标签别名解析到 scope 外 IP → 应拒（收紧旧绕过面）
-    "memberbox": ["172.20.0.5"],     # 单标签别名解析到内网 IP → 放行
-})
-
 print("[extract_targets] 只抽连接目标、不抽 payload")
 check("url 只取 authority、query 内 URL 不抽",
       scope.extract_targets("curl 'http://lab-edge:8080/x?u=http://evil.com'"), ["lab-edge"])
@@ -46,9 +38,8 @@ print("[host_in_scope] 单主机判定")
 check("授权外部 IP /32 命中", scope.host_in_scope("203.0.113.10", DOM, CIDR), True)
 check("邻近未授权 IP 拒绝", scope.host_in_scope("203.0.113.11", DOM, CIDR), False)
 check("内网 IP 命中 cidr", scope.host_in_scope("172.20.0.5", DOM, CIDR), True)
-check("单标签内网名·解析不到→放行(不误杀横向)", scope.host_in_scope("lab-edge", DOM, CIDR), True)
-check("单标签别名·解析到 scope 外 IP→拒(收紧绕过)", scope.host_in_scope("evilalias", DOM, CIDR), False)
-check("单标签别名·解析到内网 IP→放行", scope.host_in_scope("memberbox", DOM, CIDR), True)
+check("单标签内网名→放行(无法 CIDR 校验·不误杀横向)", scope.host_in_scope("lab-edge", DOM, CIDR), True)
+check("任意单标签名→放行(不调 DNS，避免 catch-all 解析器误杀)", scope.host_in_scope("whatever-box", DOM, CIDR), True)
 check("子域放行", scope.host_in_scope("srv.veritas.lab", DOM, CIDR), True)
 check("多标签外部 FQDN 拒绝", scope.host_in_scope("evil.com", DOM, CIDR), False)
 check("loopback 恒放行", scope.host_in_scope("127.0.0.5", DOM, CIDR), True)
@@ -65,7 +56,7 @@ ALLOW = [
     "impacket-secretsdump -dc-ip 203.0.113.10 veritas.lab/webdev:pw@203.0.113.10 -just-dc",
     "curl 'http://lab-edge:8080/redirect?url=http://evil.com'",      # 开放重定向 payload 不越界
     "curl http://localhost:3000 -A 'Mozilla/5.0 (http://bot.example.com)'",
-    "ssh root@memberbox id",                # 单标签别名解析到内网 IP → 放行
+    "ssh root@lab-internal id",             # 单标签内网容器名 → 放行（不误杀横向）
 ]
 DENY = [
     "nmap -sV 203.0.113.9",                 # 邻近未授权 IP
@@ -76,7 +67,6 @@ DENY = [
     "ssh user@198.51.100.7 id",
     "curl http://169.254.169.254/latest/meta-data/",   # 云元数据端点
     "curl http://lab-edge/ -d 'ip=203.0.113.9'",       # payload 里越界 IP（保守拦）
-    "curl http://evilalias/",                          # 单标签别名解析到 scope 外 IP（收紧后拦）
 ]
 for c in ALLOW:
     check(f"allow: {c[:50]}", sc.allows_cmd(c), True)

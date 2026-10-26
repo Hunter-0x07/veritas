@@ -53,3 +53,10 @@ autonomy:
   mode: "auto"        # auto（按 probe.authorization 推导）| full_auto（全放行）| approval（破坏性需审批）
   # 当前引擎全自动无人在环：approval 下遇需审批动作——
   on_gated: "deny"    # deny（拦截+记录·fail-closed·默认·安全闸）| allow（放行+记录·fail-open·仅遥测）
+
+# 跨 run 策略记忆（M5·见 veritas/core/memory.py）：run 结束把【已验证】成功 kill chain 蒸馏成策略入库，
+# 新 run 遇相似目标检索复用为【提示】（启动注入 + solver 的 recall_strategy 工具）。纪律：只记动作/漏洞
+# 路径（脱敏·绝不记跨 run 的凭据/secret）；提示永不驱动 verdict（verifier/prober 仍从真实输出重推）。
+memory:
+  enabled: true       # A/B 验证 / 干净复现时设 false——跨 run 记忆会让各 run 行为互相依赖
+  max_hints: 3        # 启动提示 / recall_strategy 注入的最多策略条数

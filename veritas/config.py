@@ -76,6 +76,14 @@ class ProbeCfg:
 
 
 @dataclass
+class MemoryCfg:
+    """跨 run 策略记忆（M5）。见 core/memory.py。"""
+    enabled: bool = True     # 开：run 结束蒸馏成功 kill chain 入库 + 新 run 检索注入提示
+    max_hints: int = 3       # 启动提示 / recall_strategy 注入的最多策略条数
+    # 注：A/B 验证 / 干净复现时设 false——跨 run 记忆会让各 run 行为互相依赖。
+
+
+@dataclass
 class Config:
     dsn: str
     target: str
@@ -85,6 +93,7 @@ class Config:
     scope: ScopeCfg
     probe: ProbeCfg
     autonomy: AutonomyCfg = field(default_factory=AutonomyCfg)
+    memory: MemoryCfg = field(default_factory=MemoryCfg)
 
     @staticmethod
     def load(path: str) -> "Config":
@@ -107,4 +116,6 @@ class Config:
                               if k in ProbeCfg.__annotations__}),
             autonomy=AutonomyCfg(**{k: v for k, v in raw.get("autonomy", {}).items()
                                     if k in AutonomyCfg.__annotations__}),
+            memory=MemoryCfg(**{k: v for k, v in raw.get("memory", {}).items()
+                                if k in MemoryCfg.__annotations__}),
         )

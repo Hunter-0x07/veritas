@@ -78,6 +78,10 @@ def _schemas() -> list[dict]:
         fn("search_worker_traces",
            "检索舰队其他成员已跑过的命令与结果（避免重复侦察、复用端点/凭据线索），返回最近匹配记录",
            {"query": {"type": "string", "description": "关键词，如主机名/端点/'password'/'ssh'"}}, ["query"]),
+        fn("recall_strategy",
+           "检索舰队【过往其它 run】打成功的策略（跨 run 记忆）：遇到相似漏洞/服务时复用历史手法。"
+           "返回脱敏策略摘要（只给动作/漏洞路径，不含任何凭据）——仅供参考，仍须亲自验证、绝不据此直接上报战果。",
+           {"query": {"type": "string", "description": "关键词，如漏洞类型/服务，'command-injection'/'sqli'/'dcsync'"}}, ["query"]),
         fn("repeat_request",
            "原子重放/篡改一个 HTTP 请求（经 MITM 代理自动留痕、可复现），返回状态行+头+体",
            {"method": {"type": "string"}, "url": {"type": "string"},
@@ -132,11 +136,12 @@ class WebSolverExecutor(Executor):
     kinds = ("initial_access", "web_exploit")
 
     def __init__(self, llm: LLMClient, sandbox: Sandbox, scope=None, probe_policy=None, oob=None,
-                 runtime=None, autonomy=None):
+                 runtime=None, autonomy=None, memory=None):
         self.llm = llm
         self.sandbox = sandbox
         self.scope = scope
         self.autonomy = autonomy  # 分级自主/审批门策略（None→不门控，向后兼容；engine live 必传）
+        self.memory = memory      # 跨 run 策略记忆配置（None/关→不检索不注入，向后兼容）
         self.oob = oob          # OOB canary provider（SSRF/XXE 用；None→prober 内用 NoopOOB）
         # agentic loop 步数上限 + 冷图压缩参数（可由 dispatch runtime 调；冷图压缩让步数不再被成本卡住）
         self.max_steps = int(getattr(runtime, "max_steps", None) or MAX_STEPS)
@@ -160,8 +165,9 @@ class WebSolverExecutor(Executor):
         await self.mitm.start()       # 起全链路 MITM 留痕（幂等）
         tr = Transition()
         preload = knowledge.load("web-recon") or ""
+        hints = await self._memory_hints(board, task_id, target, opp)  # 跨 run 策略记忆（脱敏·仅供参考）
         messages = [
-            {"role": "system", "content": SYSTEM + "\n\n# 预载知识: web-recon\n" + preload},
+            {"role": "system", "content": SYSTEM + "\n\n# 预载知识: web-recon\n" + preload + hints},
             {"role": "user", "content": f"授权目标: {target}\n当前意图: {opp['kind']}\n"
                                         "开始挖洞：先 recon 摸清端点，再利用。拿到访问/凭据/数据就 report_*，完成 finish。"},
         ]
@@ -290,6 +296,27 @@ class WebSolverExecutor(Executor):
                          f"  resp_body={(fl['resp_body'] or '')[:600]}")
         return "\n".join(parts)
 
+    async def _memory_hints(self, board, task_id: str, target: str, opp) -> str:
+        """跨 run 策略记忆：按当前目标指纹检索过往【其它 run】打成功的策略，命中则返回注入块
+        （脱敏·仅供参考·绝不驱动 verdict）。未启用/无命中/异常 → 返回 ''（不影响本次）。"""
+        if self.memory is None or not getattr(self.memory, "enabled", False):
+            return ""
+        try:
+            from ..core import memory as _mem
+            assets = await board.assets(task_id)
+            findings = await board.findings(task_id)
+            tags = _mem.fingerprint_tags(target, assets, findings)
+            k = int(getattr(self.memory, "max_hints", 3))
+            rows = await board.search_strategies(tags=tags, query=(opp.get("kind") or ""),
+                                                 limit=k, exclude_task=task_id)
+            block = _mem.format_hints(rows, k)
+            if block:
+                log.info("[%s] 跨 run 记忆：注入 %d 条历史策略提示", opp.get("claimed_by") or "ws", len(rows))
+                return "\n\n" + block
+        except Exception as e:  # noqa: BLE001
+            log.warning("跨 run 记忆检索失败（不影响本次）: %s", e)
+        return ""
+
     async def _safety_gate(self, cmd: str, board, task_id: str, wid: str) -> tuple[bool, str]:
         """执行点统一安全门：scope 越界 + 审批门。放行→(True,'')；拦截→(False, 给 LLM 的提示)
         并把被拦动作落 activity（gate 标记，供报告「安全闸」小节与 Observer 交叉核）。"""
@@ -350,6 +377,14 @@ class WebSolverExecutor(Executor):
                 else:
                     out.append(f"[{r['worker_id']}] {c.get('kind','')} ok={c.get('ok')} {c.get('summary','')}")
             return "\n".join(out), False
+        if name == "recall_strategy":
+            if self.memory is None or not getattr(self.memory, "enabled", False):
+                return "（跨 run 记忆未启用）", True
+            from ..core import memory as _mem
+            k = int(getattr(self.memory, "max_hints", 3)) + 2
+            rows = await board.search_strategies(query=args.get("query", ""), limit=k, exclude_task=task_id)
+            block = _mem.format_hints(rows, k)
+            return (block or "（无匹配的历史成功策略）"), True
         if name == "load_skill":
             body = knowledge.load(args.get("name", ""))
             return (body or "无此知识包"), True

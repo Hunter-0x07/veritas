@@ -5,13 +5,13 @@ from .mock import MockExecutor
 
 def build_registry(mode: str = "mock", llm=None, sandbox=None,
                    probe_policy=None, scope=None, oob=None, runtime=None,
-                   autonomy=None) -> dict[str, Executor]:
+                   autonomy=None, memory=None) -> dict[str, Executor]:
     mock = MockExecutor()
     reg: dict[str, Executor] = {k: mock for k in mock.kinds}
     if mode == "live" and llm is not None and sandbox is not None:
         from .web_solver import WebSolverExecutor
         ws = WebSolverExecutor(llm, sandbox, scope=scope, probe_policy=probe_policy, oob=oob,
-                               runtime=runtime, autonomy=autonomy)
+                               runtime=runtime, autonomy=autonomy, memory=memory)
         for k in ws.kinds:            # initial_access / web_exploit 走真打；internal/lateral 暂留 mock(备 M3)
             reg[k] = ws
     return reg

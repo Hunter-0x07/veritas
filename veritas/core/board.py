@@ -240,3 +240,40 @@ class Board:
     async def kill_chain(self, task_id: str) -> list[asyncpg.Record]:
         """按 exploits/pivots_to 边串出的立足点推进序列（按产生顺序近似）。"""
         return await self.footholds(task_id)
+
+    # ---- 跨 run 策略记忆（M5，见 core/memory.py）----
+    async def add_strategy(self, task_id: str, target: str, tags: list, summary: str,
+                           steps: list, max_access: str) -> int:
+        async with self.pool.acquire() as c:
+            return await c.fetchval(
+                """INSERT INTO strategies(task_id,target,tags,summary,steps,max_access)
+                   VALUES($1,$2,$3,$4,$5,$6) RETURNING id""",
+                task_id, target, [str(t) for t in (tags or [])], summary, steps or [], max_access)
+
+    async def search_strategies(self, tags: Optional[list] = None, query: str = "",
+                                limit: int = 5, exclude_task: Optional[str] = None) -> list[asyncpg.Record]:
+        """确定性检索过往成功策略：tags 数组重叠 或 summary/steps ILIKE query；排除当前 task。
+        先取候选（按新鲜度），再在 Python 侧按标签重叠度排序取 top-limit（见 memory.relevance）。"""
+        tags = [str(t).lower() for t in (tags or [])]
+        conds: list[str] = []
+        args: list = []
+        if tags:
+            args.append(tags)
+            conds.append(f"tags && ${len(args)}::text[]")
+        if query:
+            args.append(query)
+            conds.append(f"(summary ILIKE '%'||${len(args)}||'%' OR steps::text ILIKE '%'||${len(args)}||'%')")
+        if not conds:
+            return []
+        where = "(" + " OR ".join(conds) + ")"
+        if exclude_task:
+            args.append(exclude_task)
+            where += f" AND task_id IS DISTINCT FROM ${len(args)}"
+        async with self.pool.acquire() as c:
+            rows = await c.fetch(
+                f"SELECT * FROM strategies WHERE {where} ORDER BY id DESC LIMIT {max(1, int(limit) * 3)}", *args)
+        if tags:
+            tset = set(tags)
+            rows = sorted(rows, key=lambda r: len(tset & set((t or "").lower() for t in (r["tags"] or []))),
+                          reverse=True)
+        return list(rows)[:int(limit)]

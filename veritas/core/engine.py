@@ -63,7 +63,7 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
         solvers = [Solver(f"s{i}", board,
                           build_registry("live", llm, sandboxes[i], scope=cfg.scope,
                                          probe_policy=cfg.probe, oob=oob, runtime=cfg.runtime,
-                                         autonomy=autonomy), verifier)
+                                         autonomy=autonomy, memory=getattr(cfg, "memory", None)), verifier)
                    for i in range(nworkers)]
         log.info("safe-probe 策略：authorization=%s · budget=%d · llm_judge=%s · oob=%s",
                  cfg.probe.authorization, cfg.probe.budget, cfg.probe.llm_judge,
@@ -98,6 +98,12 @@ async def run(cfg: Config, target: str | None = None, goal: str | None = None):
 
     report_path, reached, max_acc = await killchain.generate(board, task_id, target, goal,
                                                              mode=cfg.llm.mode)
+    # 跨 run 策略记忆（M5）：live 模式且有 verified 进展（非 external）时，蒸馏成功 kill chain 入库，
+    # 供后续相似目标的 run 检索复用。失败不影响本次结论（capture 内部已 try/except）。
+    _mem_cfg = getattr(cfg, "memory", None)
+    if cfg.llm.mode == "live" and getattr(_mem_cfg, "enabled", False) and max_acc != "external":
+        from .memory import capture as _capture
+        await _capture(board, task_id, target)
     if llm is not None:
         log.info("LLM 用量: in=%d out=%d tokens · 估算成本 $%.4f（glm 实际费用以智谱后台为准）",
                  llm.tokens_in, llm.tokens_out, llm.cost_usd)

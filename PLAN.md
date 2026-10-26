@@ -175,6 +175,32 @@ Veritas v1 做成了"漏洞验证器"（确认 SQLi/XSS 三态裁决就结束）
   降级且不触沙箱）。**prober 对 scope=None 零行为变化**（现有 49 探针单测不传 scope→守卫不触发）。live（交用户终端跑·烧
   token）复验 GLM 越界命令落 `gate=scope_denied`、合法内网不误杀待补。血缘：ARTEX 分级自主/审批门。
 
+  ### kill chain 可视化回放（build-in-public）（✅ 已落地 2026-10-26）
+  **为什么**：战果都在 Postgres + markdown 里，不可读、不可分享。**可视化回放**把攻击图+战果+命令
+  时间线渲成单文件 HTML，每次 run 顺带产出（同 `killchain.generate`、同源真实底物）。
+  **已落地**：`report/killchain_viz.py`——`build_payload`（纯函数）整理 footholds/edges/credentials/
+  loot/findings/activity/http_flows 成 payload（按访问级别排 rank、pivot 边只留立足点间、activity 按
+  observer>gate>probe>fleet>exec 分类成回放时间线、凭据 secret 脱敏、统计 verified/refuted/unproven +
+  安全闸事件）；`export_html` 注进内联模板出**自包含单文件**（内联 CSS/JS+SVG，无外部依赖、离线可开、
+  可截图/录屏）。查看器：访问级别泳道、verdict 配色、pivot 边、▶回放按 created_at 点亮节点、点节点看
+  证据/探针/PoC、侧栏 tab（凭据/战利品/漏洞/MITM curl/安全闸）。**验证**：30 单测 + 两次真 run 实载
+  （`2f8d0af3ad72`/`960ed37db50e`，零 console error）；且第一天就靠「安全闸」tab 揪出 scope 单标签回归。
+
+  ### 跨 run 策略记忆（cross-run strategy memory）（✅ v1 已落地 2026-10-26）
+  **为什么**：每个 run 都是白纸，打成功过的 kill chain 下次相似目标还得从零摸。记忆让引擎"越打越聪明"。
+  **已落地**（v1 轻量确定性，不上向量库）：`core/memory.py`——`distill_strategy`（纯函数）把【verified 且
+  rank>external】的立足点蒸馏成策略 `{tags, summary, steps, max_access}`，`fingerprint_tags`/`relevance`
+  算当前目标指纹与重叠度。`schema.sql` 加 `strategies` 表（tags TEXT[] GIN + steps JSONB）；`board`
+  加 `add_strategy`/`search_strategies`（标签数组重叠 或 summary/steps ILIKE，Python 侧按重叠度排序）。
+  `web_solver`：启动按目标指纹注入历史策略提示块 + 新工具 `recall_strategy(query)`（solver 发现漏洞/服务
+  后自主检索，镜像 `search_worker_traces`）。`engine.run` 结束（live + verified 进展）蒸馏入库。
+  **两条铁律**：① **脱敏**——策略只记动作/漏洞路径/技能，approach 存通用描述（web/ssti、命令执行回环、
+  DCSync）**绝不存原始命令/凭据**（AD 的 `verify_command` 带域口令！单测专门塞假口令验不外泄）；②
+  **提示永不驱动 verdict**——verifier/prober 仍从真实输出重推，提示误导也污染不了结论。config `memory`
+  （enabled/max_hints；A/B 复现设 false）。**验证**：23 确定性单测（distill/指纹/重叠/format/capture 编排
+  + 脱敏）+ 9 真 Postgres 临时库集成测（add/search 往返·标签重叠·ILIKE·exclude·脱敏持久化·relevance 排序）。
+  **后续**：embedding 检索、记忆衰减/淘汰。
+
   ### 证明模型（proof-of-effect verifier）——面向未知靶场的结论可信
   **为什么**：M4 的 `verifier.py` 验的是「solver 自述 evidence ↔ 命令输出的字符串重叠」——声称和证据都由 LLM 挑，本质是**验"报告"不验"世界"**。后果：调 prompt 让模型把 evidence 写成 verifier 想要的样子就能变绿 = **过拟合某个模型的输出格式**，再跑一次也只证明"模型输出符合预期"，而非"攻击真发生"。要挖 HackerOne / 上未知靶场（项目定位第一性），必须把验证锚到**世界**。
   **原则**：verdict 由系统从【已记录的真实世界底物】(`activity` 的 exec/rc/out、`http_flows`/MITM) 按**每个访问级别的"举证义务"**自行重新推导；solver 的 evidence/location 只当线索/锚点。三态收敛（借 strix 的 closure discipline）：`verified`（义务达成）/ `refuted`（世界里有明确反证，保守触发）/ `unproven`（open_proof_gap：不计入进展，但记录上报、绝不冒充成功也不偷偷丢）。证据强度阶梯：用成功的凭据 > 效果痕迹(proof-of-effect) > 高熵密文在真实输出里+凭据佐证 > location 真跑过 > 字符串重叠(最弱)。

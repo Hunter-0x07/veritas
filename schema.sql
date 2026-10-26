@@ -125,6 +125,20 @@ CREATE TABLE IF NOT EXISTS http_flows (
 );
 CREATE INDEX IF NOT EXISTS idx_flow_task ON http_flows(task_id, id);
 
+-- 跨 run 策略记忆（M5）：把【已验证】成功 kill chain 蒸馏成策略存库，新 run 检索复用为提示。
+-- 纪律：只存【动作/漏洞路径/技能】，绝不存跨 run 的凭据/secret/loot 值（脱敏，见 core/memory.py）。
+CREATE TABLE IF NOT EXISTS strategies (
+  id         BIGSERIAL PRIMARY KEY,
+  task_id    TEXT,
+  target     TEXT,
+  tags       TEXT[] DEFAULT '{}',          -- 指纹标签（vuln类型/服务/app签名/访问路径），检索主键
+  summary    TEXT,                         -- 一句话策略摘要（人读 + 注入提示用）
+  steps      JSONB DEFAULT '[]',           -- 有序策略步骤（脱敏：access_level + vuln_type + approach）
+  max_access TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_strategies_tags ON strategies USING GIN(tags);
+
 -- 旧库迁移：补 verdict 列（幂等，建表在前故放末尾）
 ALTER TABLE footholds   ADD COLUMN IF NOT EXISTS verdict TEXT NOT NULL DEFAULT 'verified';
 ALTER TABLE credentials ADD COLUMN IF NOT EXISTS verdict TEXT NOT NULL DEFAULT 'verified';

@@ -8,10 +8,17 @@ target: "http://localhost:3000"
 goal: "shell"            # external < recon < web_user < web_admin < db_read < shell < root < domain_admin
 
 llm:
-  mode: "mock"           # mock（M0，无需 LLM/真实目标）| live（M1+）
-  model: "openai/glm-5.3"
-  # api_base: "https://open.bigmodel.cn/api/paas/v4"
-  # api_key_env: "GLM_API_KEY"
+  mode: "mock"             # mock（M0，无需 LLM/真实目标）| live（M1+）
+  # 多 provider（见 veritas/llm/providers.py）：换 provider 即换模型；litellm 统一各家 tool-use 与响应，
+  # 切换时 executor/web_solver 零改动。各家 key 走环境变量：
+  #   glm→GLM_API_KEY · deepseek→DEEPSEEK_API_KEY · openai→OPENAI_API_KEY · anthropic→ANTHROPIC_API_KEY
+  provider: "glm"          # glm | deepseek | openai(别名 gpt) | anthropic(别名 claude)
+  # 预设自动补全 model/端点/key 环境变量；下面留空即用预设，填了即覆盖（显式优先）：
+  # model: ""              # 覆盖预设 model id（各家版本会漂移，以你 key 可用的为准）
+  #   预设起步：glm=openai/glm-5.3 · deepseek=deepseek/deepseek-chat · openai=openai/gpt-4o · anthropic=anthropic/claude-sonnet-5-5
+  # api_base: ""           # 覆盖预设端点
+  # api_key_env: ""        # 覆盖预设 key 环境变量名
+  # reasoning_effort: ""   # 部分模型支持（如 o 系列 / glm）
 
 runtime:
   execution: "local"

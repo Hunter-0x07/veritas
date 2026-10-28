@@ -34,9 +34,10 @@ class AutonomyCfg:
 @dataclass
 class LLMCfg:
     mode: str = "mock"          # mock | live
-    model: str = "openai/glm-5.3"
-    api_base: str | None = None
-    api_key_env: str | None = None
+    provider: str = "glm"       # glm | deepseek | openai(gpt) | anthropic(claude)，见 llm/providers.py
+    model: str = ""             # 空=用 provider 预设；填了=覆盖预设的 model id
+    api_base: str | None = None # 空=用预设；填了=覆盖
+    api_key_env: str | None = None  # 空=用预设；填了=覆盖
     reasoning_effort: str | None = None
     extra_body: dict | None = None
 
@@ -107,7 +108,7 @@ class Config:
             target=raw.get("target", ""),
             goal=raw.get("goal", "shell"),
             llm=LLMCfg(**{k: v for k, v in raw.get("llm", {}).items()
-                          if k in {"mode", "model", "api_base", "api_key_env",
+                          if k in {"mode", "provider", "model", "api_base", "api_key_env",
                                    "reasoning_effort", "extra_body"}}),
             runtime=RuntimeCfg(**{k: v for k, v in raw.get("runtime", {}).items()
                                   if k in RuntimeCfg.__annotations__}),

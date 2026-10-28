@@ -201,6 +201,20 @@ Veritas v1 做成了"漏洞验证器"（确认 SQLi/XSS 三态裁决就结束）
   + 脱敏）+ 9 真 Postgres 临时库集成测（add/search 往返·标签重叠·ILIKE·exclude·脱敏持久化·relevance 排序）。
   **后续**：embedding 检索、记忆衰减/淘汰。
 
+  ### 多 provider（GLM / DeepSeek / OpenAI / Anthropic 一键切换）（✅ 已落地 2026-10-28）
+  **为什么**：引擎原本硬绑 GLM（单点依赖 + 无法对比"哪个模型最会渗透"）。M5 完成定义最后一项。
+  **已落地**（底子就有：LLM 层本就走 LiteLLM，天然多 provider；补的是预设 + 一键切换）：
+  `llm/providers.py` 预设表——`glm`（智谱 OpenAI 兼容端点）/`deepseek`（原生）/`openai`(别名 gpt)/
+  `anthropic`(别名 claude)，各自补全 model 路由 + api_base + key 环境变量；`resolve()` 纯函数，显式
+  `llm.model/api_base/api_key_env` 覆盖预设，不填 provider → 纯用显式字段（向后兼容旧 dispatch）。
+  `LLMCfg` 加 `provider` 字段（默认 glm，model 默认空=用预设）；`LLMClient.__init__` 经 resolve 接线 +
+  key 缺失告警。**关键**：LiteLLM 统一各家 tool-use（OpenAI 风格 function calling）与响应格式
+  （`choices[0].message.tool_calls`），所以切 provider 时 **executor/web_solver/prober 零改动**。
+  各家 key 走环境变量（GLM_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY）。
+  **验证**：25 确定性单测（resolve 预设/别名/覆盖/未知兜底/向后兼容 + LLMClient 接线，不发请求）+ 全套
+  回归零破坏。注：各家 model id 随版本漂移，预设给起步建议、以 key 可用的为准（llm.model 覆盖）。
+  live 跨 provider 对比（同靶场 GLM vs DeepSeek vs GPT vs Claude）交用户终端跑（各需对应 key）。
+
   ### 证明模型（proof-of-effect verifier）——面向未知靶场的结论可信
   **为什么**：M4 的 `verifier.py` 验的是「solver 自述 evidence ↔ 命令输出的字符串重叠」——声称和证据都由 LLM 挑，本质是**验"报告"不验"世界"**。后果：调 prompt 让模型把 evidence 写成 verifier 想要的样子就能变绿 = **过拟合某个模型的输出格式**，再跑一次也只证明"模型输出符合预期"，而非"攻击真发生"。要挖 HackerOne / 上未知靶场（项目定位第一性），必须把验证锚到**世界**。
   **原则**：verdict 由系统从【已记录的真实世界底物】(`activity` 的 exec/rc/out、`http_flows`/MITM) 按**每个访问级别的"举证义务"**自行重新推导；solver 的 evidence/location 只当线索/锚点。三态收敛（借 strix 的 closure discipline）：`verified`（义务达成）/ `refuted`（世界里有明确反证，保守触发）/ `unproven`（open_proof_gap：不计入进展，但记录上报、绝不冒充成功也不偷偷丢）。证据强度阶梯：用成功的凭据 > 效果痕迹(proof-of-effect) > 高熵密文在真实输出里+凭据佐证 > location 真跑过 > 字符串重叠(最弱)。

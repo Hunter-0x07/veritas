@@ -28,7 +28,8 @@
 - **M5 安全闸（分级自主/审批门 + scope 真接入 executor·碰真外部目标前的硬边界）** ✅ — 新建 `veritas/safety/` 包。**① scope 真接入**（堵明确安全漏洞：engine 旧版 `build_registry` 没传 scope→守卫永不触发，`ScopeCfg` 也没 `allows_cmd`；实测 task `6661273c36a0` GLM 被域凭据勾引往关机云 DC + Docker 网关撞十几次没人拦）：`safety/scope.py` 纯函数从命令抽【连接目标】主机/IP（所有 IP 字面量一律抽=高信号堵越界；URL 只取 authority、query 内嵌 URL 与 `--data`/`-H` 旗标值里的 FQDN 不抽=不误杀开放重定向类合法请求），比对 domains+CIDR：域内放行/域外拒绝/本地命令放行/单标签内网名放行(不误杀横向)/多标签外部 FQDN 拒绝/loopback 恒放行/空 scope 不强制。engine 把 `cfg.scope` 一路传进 web_solver（越界回提示给 LLM + 落 `activity(gate=scope_denied)`）**和 prober**（nonce/重认证/DCSync/9 类 web 探针目标向量越界→降级 INCONCLUSIVE 绝不 refuted；例外 `_oob_poll` 查引擎自托管监听器非目标）。**② 分级自主/审批门(HITL)**：`safety/autonomy.py` `classify` 按破坏性/噪声分 benign/file_write/file_delete/destructive/broad_scan/bruteforce（噪声档 low/medium/high 与 prober safe-probe 对齐复用）；`AutonomyPolicy.mode=auto` 按 `probe.authorization` 推导(lab→full_auto / external→approval)；无人在环时 approval 下 `on_gated=deny`(**fail-closed 默认**)拦破坏性/大范围扫描/在线爆破(回提示换招+落 `gate=needs_approval`+Observer 交叉核)，`on_gated=allow` 给受监督 run 的 fail-open 选项。纪律：sandbox scratch 写/窄扫描/单文件 rm/读命令不误杀。报告加「安全闸」小节。真正的交互式暂停/恢复 UI 留后续。**验证**：`tests/safety/` 三套确定性单测全绿(test_scope 36 例·test_autonomy·test_wiring 18 例 async 假 sandbox 不调 GLM，证越界命令被拦且沙箱从未被调用、合法横向不误杀、破坏性按策略放/拦)；prober 对 scope=None 零行为变化。live 复验 GLM 越界被拦待用户终端跑。详见 PLAN.md M5。
 - **M5 kill chain 可视化回放(build-in-public)** ✅ — `report/killchain_viz.py`：`build_payload`(纯函数)把攻击图+战果+命令时间线整理成 payload（按访问级别排 rank·pivot 边只留立足点间·activity 分类成回放时间线·凭据脱敏·统计 verified/refuted/unproven+安全闸事件），`export_html` 注内联模板出**自包含单文件**(内联 CSS/JS+SVG·无外部依赖·离线可开·可截图录屏)。查看器：访问级别泳道+verdict 配色+pivot 边+▶回放(按 created_at 点亮节点)+点节点看证据/探针/PoC+侧栏 tab(凭据/战利品/漏洞/MITM curl/安全闸)+明暗主题。接进 `killchain.generate` 每次 run 顺带产出 `killchain.html`。验证：30 单测 + 两次真 run 实载(2f8d0af3ad72/960ed37db50e·零 console error)，且第一天就靠「安全闸」tab 揪出 scope 单标签回归并修掉。详见 PLAN.md M5。
 - **M5 跨 run 策略记忆(cross-run strategy memory·v1)** ✅ — 让引擎"越打越聪明"：把【已验证】成功 kill chain 蒸馏成策略存库，新 run 遇相似目标检索复用为提示。`core/memory.py` `distill_strategy`(纯·只收 verified 且 rank>external)/`fingerprint_tags`/`relevance`；`schema.sql` 加 `strategies` 表(tags TEXT[] GIN + steps JSONB)；`board.add_strategy`/`search_strategies`(标签重叠 或 ILIKE·Python 按重叠度排序)；`web_solver` 启动按指纹注入历史策略提示 + 工具 `recall_strategy(query)`(镜像 search_worker_traces)；`engine.run` 结束(live+verified 进展)蒸馏入库。**两条铁律**：① 脱敏——approach 只存通用动作描述(web/ssti·命令执行回环·DCSync)**绝不存原始命令/凭据**(AD verify_command 带域口令，单测塞假口令验不外泄)；② 提示永不驱动 verdict(verifier/prober 仍从真实输出重推)。config `memory`(enabled/max_hints·A/B 复现设 false)。v1 轻量确定性(不上向量库)。验证：23 确定性单测 + 9 真 Postgres 临时库集成测(add/search 往返·标签重叠·ILIKE·exclude·脱敏持久化)。详见 PLAN.md M5。
-- **下一步候选**：M5 其余支柱(多 provider / 冷图压缩 checkpoint) · 安全闸 live 复验(scope 已 live 坐实 3→0·交互式审批 UI 待做) · 策略记忆 live 验(连跑两次命中历史策略)+embedding 检索 · Stage 3 收尾(DNS-OOB·真 interactsh / 盲注时间 oracle / 沙箱补 chromium) · 多"根目标"并行 · 真 SOCKS pivot · build-in-public 素材(M3/M4/AD/Stage2/Stage3/冷图/安全闸/可视化/策略记忆 现成)
+- **M5 多 provider(GLM/DeepSeek/OpenAI/Anthropic 一键切换)** ✅ — M5 完成定义最后一项收官。LLM 层本就走 LiteLLM(天然多 provider)，补的是`llm/providers.py` 预设表(glm 智谱兼容端点/deepseek 原生/openai 别名 gpt/anthropic 别名 claude，各补全 model 路由+api_base+key 环境变量)+ `resolve()` 纯函数(显式 llm.model/api_base/api_key_env 覆盖预设，不填 provider→纯显式字段向后兼容)；`LLMCfg` 加 provider 字段(默认 glm，model 默认空=用预设)，`LLMClient` 经 resolve 接线+key 缺失告警。**关键**：LiteLLM 统一各家 tool-use+响应格式，切 provider 时 executor/web_solver/prober **零改动**。key 走环境变量(GLM_API_KEY/DEEPSEEK_API_KEY/OPENAI_API_KEY/ANTHROPIC_API_KEY)。验证：25 单测(resolve 预设/别名/覆盖/未知/向后兼容 + client 接线)+全套回归零破坏。各家 model id 随版本漂移→预设给起步建议、llm.model 覆盖。详见 PLAN.md M5。
+- **下一步候选**：M5 其余支柱(冷图压缩 checkpoint) · 安全闸 live 复验(scope 已 live 坐实 3→0·交互式审批 UI 待做) · 策略记忆 live 验(连跑两次命中历史策略)+embedding 检索 · Stage 3 收尾(DNS-OOB·真 interactsh / 盲注时间 oracle / 沙箱补 chromium) · 多"根目标"并行 · 真 SOCKS pivot · build-in-public 素材(M3/M4/AD/Stage2/Stage3/冷图/安全闸/可视化/策略记忆 现成)
 
 ## 代码结构
 ```
@@ -36,15 +37,15 @@ veritas/core/     board(攻击图) · coordinator(分解多前沿) · solver(CAS
 veritas/executors/ mock(M0桩,多主机) · web_solver(GLM 自由沙箱挖洞+横向; trace/repeat_request/recall_strategy; _safety_gate执行点=scope+审批门; 启动注入跨run策略提示)
 veritas/safety/   scope(授权边界·抽连接目标比对domains+CIDR·纯函数) · autonomy(分级自主/审批门HITL·classify破坏性+AutonomyPolicy·与safe-probe对齐)
 veritas/runtime/  sandbox(Kali 容器 shell) · mitm(记录型代理·全链路HTTP留痕+CA注入)
-veritas/llm/      client(GLM-5.3 via litellm) · compaction(冷图压缩·转录压缩·控长程成本·纯函数)
+veritas/llm/      client(LiteLLM·多provider·成本累计) · providers(GLM/DeepSeek/OpenAI/Anthropic 预设+resolve·纯函数) · compaction(冷图压缩·转录压缩·控长程成本·纯函数)
 veritas/knowledge/ skills/*.md(web-recon/sqli/auth/lateral) + loader
 veritas/report/   killchain(kill chain 树 + 每跳 PoC + 舰队归属 + MITM curl 复现 + 安全闸小节 + 结论可信度) · killchain_viz(可视化回放·自包含单文件 HTML·build_payload纯函数+export_html)
-tests/            safety/(scope/autonomy/wiring) · report/(killchain_viz) · memory/(memory+真DB集成) 确定性单测(纯 .venv/bin/python·无 pytest 依赖)
+tests/            safety/(scope/autonomy/wiring) · report/(killchain_viz) · memory/(memory+真DB集成) · llm/(providers) 确定性单测(纯 .venv/bin/python·无 pytest 依赖)
 schema.sql(双图 + footholds/credentials.verdict + http_flows) · dispatch.yaml(本地,gitignore) · containers/Dockerfile(Kali沙箱,含mitmproxy) · targets/lateral-lab/(横向靶场)
 ```
 
 ## 技术栈 & 环境
-Python 3.12 + asyncpg + PostgreSQL(docker compose) + litellm + playwright。沙箱镜像 `veritas-sandbox:latest`(kali-linux-default 全家桶)。LLM = GLM-5.3(litellm openai 兼容端点 + `GLM_API_KEY` 环境变量)。
+Python 3.12 + asyncpg + PostgreSQL(docker compose) + litellm + playwright。沙箱镜像 `veritas-sandbox:latest`(kali-linux-default 全家桶)。LLM = **多 provider via LiteLLM**(GLM/DeepSeek/OpenAI/Anthropic 一键切换，见 `llm/providers.py`；默认 GLM-5.3 智谱兼容端点 + `GLM_API_KEY`，各家 key 走对应环境变量)。
 
 ## 怎么跑
 ```bash
